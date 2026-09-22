@@ -1,0 +1,53 @@
+{
+  "name": "memos-on-edgeone",
+  "buildCommand": "npm run build:web",
+  "installCommand": "npm install && cd web && npm install",
+  "outputDirectory": "./web/dist",
+  "nodeVersion": "22.11.0",
+  "cloudFunctions": {
+    "nodejs": {
+      "externalNodeModules": [],
+      "includeFiles": [],
+      "maxDuration": 60
+    }
+  },
+  "redirects": [],
+  "rewrites": [
+    {
+      "source": "/api/*",
+      "destination": "/api/:splat"
+    },
+    {
+      "source": "/file/*",
+      "destination": "/file/:splat"
+    },
+    {
+      "source": "/u/*",
+      "destination": "/u/:splat"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/*",
+      "headers": [
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        }
+      ]
+    },
+    {
+      "source": "/assets/*",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    }
+  ]
+}

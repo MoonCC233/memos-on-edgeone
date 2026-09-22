@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "types": ["vite/client"],
+    "allowJs": false,
+    "skipLibCheck": false,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@bufbuild/protobuf/codegenv2": ["./src/shims/protobuf-codegenv2.ts"],
+      "@bufbuild/protobuf/wkt": ["./src/shims/protobuf-wkt.ts"],
+      "@bufbuild/protobuf": ["./src/shims/protobuf.ts"],
+      "@connectrpc/connect-web": ["./src/shims/connect-web.ts"],
+      "@connectrpc/connect": ["./src/shims/connect.ts"]
+    }
+  },
+  "include": ["./src"]
+}

@@ -1,0 +1,329 @@
+const STATE_STORAGE_KEY = "oauth_state";
+const STATE_STORAGE_PREFIX = "oauth_state:";
+const STATE_COOKIE_PREFIX = "oauth_state_";
+const STATE_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
+
+export type OAuthFlowMode = "signin" | "link";
+
+interface OAuthState {
+  state: string;
+  identityProviderName: string;
+  flowMode: OAuthFlowMode;
+  timestamp: number;
+  returnUrl?: string;
+  linkingUserName?: string;
+  codeVerifier?: string; // PKCE code_verifier
+}
+
+// Generate a cryptographically secure random state value
+function generateSecureState(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Generate a cryptographically secure random code_verifier for PKCE (RFC 7636)
+// Returns a URL-safe base64 string (43-128 characters)
+function generateCodeVerifier(): string {
+  const array = new Uint8Array(32); // 256 bits = 32 bytes
+  crypto.getRandomValues(array);
+  // Convert to base64url (URL-safe base64 without padding)
+  return base64UrlEncode(array);
+}
+
+// Generate code_challenge from code_verifier using SHA-256
+async function generateCodeChallenge(codeVerifier: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(codeVerifier);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return base64UrlEncode(new Uint8Array(hash));
+}
+
+// Base64URL encoding (RFC 4648 base64url without padding)
+function base64UrlEncode(buffer: Uint8Array): string {
+  const base64 = btoa(String.fromCharCode(...buffer));
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Store OAuth state and PKCE parameters in sessionStorage
+// Returns state and optional codeChallenge for use in authorization URL
+// PKCE is optional - if crypto APIs are unavailable (HTTP context), falls back to standard OAuth
+export async function storeOAuthState(
+  identityProviderName: string,
+  flowMode: OAuthFlowMode,
+  returnUrl?: string,
+  linkingUserName?: string,
+): Promise<{ state: string; codeChallenge?: string }> {
+  const state = generateSecureState();
+
+  // Try to generate PKCE parameters if crypto.subtle is available (HTTPS/localhost)
+  // Falls back to standard OAuth flow if unavailable (HTTP context)
+  let codeVerifier: string | undefined;
+  let codeChallenge: string | undefined;
+
+  try {
+    // Check if crypto.subtle is available (requires secure context: HTTPS or localhost)
+    if (typeof crypto !== "undefined" && crypto.subtle) {
+      codeVerifier = generateCodeVerifier();
+      codeChallenge = await generateCodeChallenge(codeVerifier);
+    } else {
+      console.warn(
+        "PKCE not available: crypto.subtle requires HTTPS. Falling back to standard OAuth flow without PKCE. " +
+          "For enhanced security, please access Memos over HTTPS.",
+      );
+    }
+  } catch (error) {
+    // If PKCE generation fails for any reason, fall back to standard OAuth
+    console.warn("Failed to generate PKCE parameters, falling back to standard OAuth:", error);
+    codeVerifier = undefined;
+    codeChallenge = undefined;
+  }
+
+  const stateData: OAuthState = {
+    state,
+    identityProviderName,
+    flowMode,
+    timestamp: Date.now(),
+    returnUrl,
+    linkingUserName,
+    codeVerifier, // Store for later retrieval in callback (undefined if PKCE not available)
+  };
+
+  try {
+    persistOAuthState(stateData);
+  } catch (error) {
+    console.error("Failed to store OAuth state:", error);
+    throw new Error("Failed to initialize OAuth flow");
+  }
+
+  return { state, codeChallenge };
+}
+
+// Validate and retrieve OAuth state from storage (CSRF protection)
+// Returns identityProviderName, flowMode, returnUrl, linkingUserName, and codeVerifier for PKCE
+export function validateOAuthState(
+  stateParam: string,
+): { identityProviderName: string; flowMode: OAuthFlowMode; returnUrl?: string; linkingUserName?: string; codeVerifier?: string } | null {
+  try {
+    const stateData = readOAuthState(stateParam);
+    if (!stateData) {
+      console.error("No OAuth state found in storage");
+      return null;
+    }
+
+    // Check if state has expired
+    if (Date.now() - stateData.timestamp > STATE_EXPIRY_MS) {
+      console.error("OAuth state has expired");
+      removeOAuthState(stateData.state);
+      return null;
+    }
+
+    // Validate state matches (CSRF protection)
+    if (stateData.state !== stateParam) {
+      console.error("OAuth state mismatch - possible CSRF attack");
+      removeOAuthState(stateData.state);
+      return null;
+    }
+
+    // State is valid, clean up and return data
+    removeOAuthState(stateData.state);
+    return {
+      identityProviderName: stateData.identityProviderName,
+      flowMode: stateData.flowMode || "signin",
+      returnUrl: stateData.returnUrl,
+      linkingUserName: stateData.linkingUserName,
+      codeVerifier: stateData.codeVerifier, // Return PKCE code_verifier
+    };
+  } catch (error) {
+    console.error("Failed to validate OAuth state:", error);
+    removeOAuthState(stateParam);
+    return null;
+  }
+}
+
+// Clean up expired OAuth states (call on app init)
+export function cleanupExpiredOAuthState(): void {
+  try {
+    cleanupExpiredOAuthStatesInStorage(sessionStorage);
+    cleanupExpiredOAuthStatesInStorage(localStorage);
+    cleanupExpiredOAuthStateCookies();
+  } catch {
+    // If cleanup fails for one storage, remove the legacy key from both.
+    sessionStorage.removeItem(STATE_STORAGE_KEY);
+    localStorage.removeItem(STATE_STORAGE_KEY);
+  }
+}
+
+function persistOAuthState(stateData: OAuthState): void {
+  const payload = JSON.stringify(stateData);
+  const stateKey = getOAuthStateKey(stateData.state);
+  const stateCookieKey = getOAuthStateCookieKey(stateData.state);
+
+  sessionStorage.setItem(stateKey, payload);
+  sessionStorage.setItem(STATE_STORAGE_KEY, payload);
+
+  try {
+    localStorage.setItem(stateKey, payload);
+    localStorage.setItem(STATE_STORAGE_KEY, payload);
+  } catch {
+    // localStorage can be unavailable in privacy modes. sessionStorage remains
+    // the primary store; localStorage is only a resilience fallback.
+  }
+
+  setCookie(stateCookieKey, payload, Math.ceil(STATE_EXPIRY_MS / 1000));
+}
+
+function readOAuthState(stateParam: string): OAuthState | null {
+  const stateKey = getOAuthStateKey(stateParam);
+  const stateCookieKey = getOAuthStateCookieKey(stateParam);
+  const fromSession = parseOAuthState(sessionStorage.getItem(stateKey));
+  if (fromSession) {
+    return fromSession;
+  }
+
+  const fromLocal = parseOAuthState(safeGetLocalStorageItem(stateKey));
+  if (fromLocal) {
+    try {
+      sessionStorage.setItem(stateKey, JSON.stringify(fromLocal));
+    } catch {
+      // Best effort only.
+    }
+    return fromLocal;
+  }
+
+  const legacy = parseOAuthState(sessionStorage.getItem(STATE_STORAGE_KEY)) ?? parseOAuthState(safeGetLocalStorageItem(STATE_STORAGE_KEY));
+  if (legacy && legacy.state === stateParam) {
+    return legacy;
+  }
+
+  const fromCookie = parseOAuthState(getCookie(stateCookieKey));
+  if (fromCookie) {
+    try {
+      sessionStorage.setItem(stateKey, JSON.stringify(fromCookie));
+    } catch {
+      // Best effort only.
+    }
+    return fromCookie;
+  }
+
+  return null;
+}
+
+function removeOAuthState(stateParam: string): void {
+  const stateKey = getOAuthStateKey(stateParam);
+  const stateCookieKey = getOAuthStateCookieKey(stateParam);
+  sessionStorage.removeItem(stateKey);
+
+  const legacy = parseOAuthState(sessionStorage.getItem(STATE_STORAGE_KEY));
+  if (legacy?.state === stateParam) {
+    sessionStorage.removeItem(STATE_STORAGE_KEY);
+  }
+
+  try {
+    localStorage.removeItem(stateKey);
+    const localLegacy = parseOAuthState(localStorage.getItem(STATE_STORAGE_KEY));
+    if (localLegacy?.state === stateParam) {
+      localStorage.removeItem(STATE_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore localStorage failures during cleanup.
+  }
+
+  deleteCookie(stateCookieKey);
+}
+
+function cleanupExpiredOAuthStatesInStorage(storage: Storage): void {
+  const keysToRemove: string[] = [];
+
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (!key) {
+      continue;
+    }
+    if (key !== STATE_STORAGE_KEY && !key.startsWith(STATE_STORAGE_PREFIX)) {
+      continue;
+    }
+
+    const stateData = parseOAuthState(storage.getItem(key));
+    if (!stateData || Date.now() - stateData.timestamp > STATE_EXPIRY_MS) {
+      keysToRemove.push(key);
+    }
+  }
+
+  for (const key of keysToRemove) {
+    storage.removeItem(key);
+  }
+}
+
+function cleanupExpiredOAuthStateCookies(): void {
+  for (const name of listCookieNames()) {
+    if (!name.startsWith(STATE_COOKIE_PREFIX)) {
+      continue;
+    }
+
+    const stateData = parseOAuthState(getCookie(name));
+    if (!stateData || Date.now() - stateData.timestamp > STATE_EXPIRY_MS) {
+      deleteCookie(name);
+    }
+  }
+}
+
+function getOAuthStateKey(state: string): string {
+  return `${STATE_STORAGE_PREFIX}${state}`;
+}
+
+function getOAuthStateCookieKey(state: string): string {
+  return `${STATE_COOKIE_PREFIX}${state}`;
+}
+
+function parseOAuthState(value: string | null): OAuthState | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value) as OAuthState;
+  } catch {
+    return null;
+  }
+}
+
+function safeGetLocalStorageItem(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function setCookie(name: string, value: string, maxAgeSeconds: number): void {
+  document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAgeSeconds}; Path=/; SameSite=Lax${getSecureCookieSuffix()}`;
+}
+
+function getCookie(name: string): string | null {
+  const prefix = `${name}=`;
+  for (const cookie of document.cookie.split("; ")) {
+    if (cookie.startsWith(prefix)) {
+      return decodeURIComponent(cookie.slice(prefix.length));
+    }
+  }
+  return null;
+}
+
+function deleteCookie(name: string): void {
+  document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax${getSecureCookieSuffix()}`;
+}
+
+function listCookieNames(): string[] {
+  if (!document.cookie) {
+    return [];
+  }
+  return document.cookie
+    .split("; ")
+    .map((cookie) => cookie.split("=")[0])
+    .filter(Boolean);
+}
+
+function getSecureCookieSuffix(): string {
+  return window.location.protocol === "https:" ? "; Secure" : "";
+}
