@@ -1,253 +1,215 @@
-# Memos on Cloudflare
+# Memos on EdgeOne Makers
 
-将 [Memos](https://github.com/usememos/memos) 笔记应用完整迁移到 Cloudflare 边缘平台，使用 Workers + D1 + R2 替代原有的 Go + SQLite + 本地存储架构。
+将 [Memos](https://github.com/usememos/memos) 笔记应用迁移到 **EdgeOne Makers** 全栈部署平台，使用 **EdgeOne Blob** 作为默认文件存储，**Turso (libSQL)** 作为数据库，可选配置 **S3 兼容存储**。
 
-## 技术栈
+## ✨ 核心特性
+
+- 🚀 **完全托管** - 无需维护服务器，EdgeOne Makers 一条龙部署
+- 🔗 **GitHub 直接部署** - 控制台关联仓库，推送即部署，无需 CLI
+- 💾 **默认 EdgeOne Blob** - 开箱即用的分布式对象存储，无需额外配置
+- ☁️ **可选 S3 兼容存储** - 支持 MinIO、AWS S3、Cloudflare R2、阿里云 OSS、腾讯云 COS 等
+- ⚙️ **所有配置存储在 Blob** - 实例设置、用户设置全部存储在 Blob 中
+- 🗄️ **SQLite 兼容数据库** - 使用 Turso (libSQL)，原有 SQL 查询几乎无需修改
+- 🔧 **零运维** - 数据库、存储、计算全托管
+
+## 🛠 技术栈
 
 | 层级 | 技术 |
 |------|------|
-| 运行时 | Cloudflare Workers |
+| 运行时 | EdgeOne Pages Functions (Node.js) |
 | 后端框架 | Hono |
-| 数据库 | Cloudflare D1 (SQLite) |
-| 文件存储 | Cloudflare R2 |
-| AI | Cloudflare Workers AI (Whisper) |
+| 数据库 | Turso (libSQL) - SQLite 兼容，HTTP 访问 |
+| 文件存储 | **EdgeOne Blob** (默认) / S3 兼容存储 (可选) |
+| AI 转写 | 可配置外部 API (OpenAI Whisper 等) |
 | 前端 | React + Vite + TailwindCSS |
 | 认证 | JWT (HS256) + bcrypt |
 
-## 前置要求
+## 🚀 快速部署 (推荐：GitHub 直接部署)
 
-- [Node.js](https://nodejs.org/) >= 18
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) >= 4.14
-- Cloudflare 账号（已开通 Workers、D1、R2）
+### 方式一：EdgeOne 控制台关联 GitHub (无需 CLI)
 
-## 快速部署
+1. **Fork 本仓库** 到你的 GitHub 账号
 
-### 1. 克隆仓库
+2. **创建 Turso 数据库**
+   ```bash
+   # 安装 Turso CLI
+   curl -sSfL https://get.tur.so/install.sh | bash
+   
+   # 创建数据库
+   turso db create memos-on-edgeone
+   
+   # 获取连接信息
+   turso db show memos-on-edgeone --url
+   turso db tokens create memos-on-edgeone
+   ```
 
-```bash
-git clone https://github.com/jkjoy/memos-on-cloudflare.git
-cd memos-on-cloudflare
-```
+3. **在 EdgeOne 控制台创建项目**
+   - 登录 [EdgeOne 控制台](https://console.edgeone.ai/)
+   - 进入 **边缘应用** → **Pages** → **创建项目**
+   - 选择 **从 Git 仓库导入**
+   - 授权 GitHub，选择 Fork 的仓库
+   - 构建配置自动读取 `edgeone.json`
 
-### 2. 安装依赖
+4. **配置环境变量** (项目设置 → 环境变量)
+   ```
+   TURSO_DATABASE_URL=libsql://your-db.turso.io
+   TURSO_AUTH_TOKEN=your-auth-token
+   JWT_SECRET=your-super-secret-jwt-key (生成: openssl rand -base64 32)
+   INSTANCE_NAME=memos-on-edgeone
+   APP_VERSION=1.0.0
+   BLOB_STORE_NAME=memos
+   ```
 
-```bash
-npm install
-cd web && npm install && cd ..
-```
+5. **首次部署后初始化数据库**
+   - 在控制台 Functions 终端运行：
+   ```bash
+   node scripts/migrate.js --remote
+   ```
 
-### 3. 创建 Cloudflare 资源
+6. **访问你的 Memos** - 部署成功后分配的域名即可访问
 
-```bash
-# 创建 D1 数据库
-wrangler d1 create cfmemos-db
+---
 
-# 创建 R2 存储桶
-wrangler r2 bucket create cfmemos
-```
-
-### 4. 配置 wrangler.toml
-
-将第 3 步创建 D1 时返回的 `database_id` 填入 `wrangler.toml`：
-
-```toml
-[assets]
-directory = "./web/dist"
-binding = "ASSETS"
-not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/file/*", "/u/*"]
-
-[[d1_databases]]
-binding = "DB"
-database_name = "cfmemos-db"
-database_id = "你的实际数据库ID"
-```
-
-### 5. 设置生产密钥
+### 方式二：本地开发 + 推送自动部署
 
 ```bash
-# 设置 JWT 密钥（务必使用强随机字符串）
-wrangler secret put JWT_SECRET
+# 1. 克隆并安装依赖
+git clone https://github.com/MoonCC233/memos-on-edgeone.git
+cd memos-on-edgeone
+npm install && cd web && npm install && cd ..
+
+# 2. 配置本地环境变量
+cp .dev.vars.example .dev.vars
+# 编辑 .dev.vars 填入 Turso URL、Token、JWT_SECRET 等
+
+# 3. 初始化数据库
+npm run db:migrate
+
+# 4. 本地开发 (两个终端)
+npm run dev          # 终端1: EdgeOne Functions 后端
+npm run dev:web      # 终端2: 前端开发服务器
+
+# 5. 推送到 GitHub 触发自动部署
+git push origin main
 ```
 
-### 6. 初始化数据库
+## ⚙️ 配置 S3 兼容存储 (可选)
+
+默认使用 **EdgeOne Blob**。如需使用 S3 兼容存储，在环境变量中设置：
 
 ```bash
-npm run db:migrate:remote
+STORAGE_TYPE=s3
+S3_ENDPOINT=https://s3.your-provider.com
+S3_REGION=auto
+S3_BUCKET=your-bucket-name
+S3_ACCESS_KEY_ID=your-access-key
+S3_SECRET_ACCESS_KEY=your-secret-key
+S3_FORCE_PATH_STYLE=true  # MinIO 等需要
 ```
 
-### 7. 构建并部署
+支持服务：MinIO、AWS S3、Cloudflare R2、阿里云 OSS、腾讯云 COS、七牛云 Kodo、又拍云 USS、华为云 OBS 等。
 
-```bash
-npm run deploy
-```
-
-部署完成后，访问 Workers 分配的域名，首次访问会进入管理员注册页面。
-
-## GitHub Actions 自动部署
-
-推送到 `main` 分支会自动触发部署。需要在 GitHub 仓库 Settings → Secrets and variables → Actions 中添加：
-
-| Secret | 说明 |
-|--------|------|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token（需要 Workers Scripts:Edit、D1:Edit、R2:Edit 权限） |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID（在 Dashboard 右侧栏可找到） |
-
-工作流会自动完成：安装依赖 → 构建前端 → 执行数据库迁移 → 部署 Worker。
-
-## 本地开发
-
-需要两个终端窗口：
-
-```bash
-# 终端 1：启动 Worker 后端（端口 8787）
-npm run db:migrate   # 首次运行需要初始化本地数据库
-npm run dev
-
-# 终端 2：启动前端开发服务器（端口 3001，自动代理 API 到 8787）
-npm run dev:web
-```
-
-浏览器访问 `http://localhost:3001`。
-
-## 项目结构
+## 📁 项目结构
 
 ```
-├── wrangler.toml          # Cloudflare 配置（D1、R2、AI 绑定）
-├── package.json           # 根 package，部署脚本
-├── migrations/
-│   └── 0001_initial.sql   # D1 数据库 schema
+├── edgeone.json              # EdgeOne Pages 配置 (自动读取)
+├── package.json              # 根 package，构建脚本
+├── .dev.vars.example         # 本地开发环境变量模板
+├── migrations/               # 数据库迁移文件 (SQLite 兼容)
+├── scripts/
+│   ├── migrate.js            # Turso 迁移脚本
+│   └── migrate-settings.js   # 设置迁移脚本
 ├── worker/
 │   └── src/
-│       ├── index.ts       # Hono 入口，路由挂载
-│       ├── types.ts       # Env 绑定类型定义
-│       ├── routes/        # API 路由
-│       │   ├── auth.ts    # 登录/注册/刷新令牌
-│       │   ├── memos.ts   # 备忘录 CRUD + 评论/反应/分享
-│       │   ├── users.ts   # 用户管理 + 设置/PAT/通知
-│       │   ├── attachments.ts  # 文件上传（R2）
-│       │   ├── files.ts   # 文件下载服务
-│       │   ├── instance.ts # 实例配置
-│       │   ├── ai.ts      # Workers AI 转写
-│       │   ├── idp.ts     # SSO 身份提供商
-│       │   ├── shortcuts.ts # 快捷过滤器
-│       │   └── sse.ts     # 实时更新
-│       ├── auth/          # JWT、密码哈希、PAT
-│       ├── db/            # D1 查询模块
-│       └── middleware/    # 认证中间件
-└── web/
-    └── src/
-        ├── connect.ts     # REST 客户端（替代 Connect RPC）
-        ├── contexts/      # React Context（实例、认证）
-        ├── components/    # UI 组件
-        ├── pages/         # 页面路由
-        ├── locales/       # i18n 翻译文件
-        └── shims/         # @bufbuild/protobuf 兼容层
+│       ├── index.ts          # Hono 入口，EdgeOne Functions 处理器
+│       ├── types.ts          # EdgeOne 环境类型定义
+│       ├── storage/          # 存储抽象层
+│       │   └── index.ts      # Blob/S3 统一接口
+│       ├── db/               # 数据库层
+│       │   ├── index.ts      # Turso 数据库提供者 + Schema
+│       │   ├── d1-wrapper.ts # D1Database 兼容包装器
+│       │   ├── settings-blob.ts # Blob 存储设置
+│       │   └── *.ts          # 各业务表查询
+│       ├── routes/           # API 路由
+│       ├── auth/             # JWT、密码哈希、PAT
+│       └── middleware/       # 认证、提供者初始化
+└── web/                      # 前端 (React + Vite)
 ```
 
-## 环境变量
+## 🔐 环境变量说明
 
-| 变量 | 说明 | 必填 |
-|------|------|------|
-| `JWT_SECRET` | JWT 签名密钥，生产环境必须使用强随机字符串 | 是 |
-| `INSTANCE_NAME` | 实例名称，显示在页面标题 | 否 |
+| 变量 | 说明 | 必填 | 默认值 |
+|------|------|------|--------|
+| `TURSO_DATABASE_URL` | Turso 数据库 URL | 是 | - |
+| `TURSO_AUTH_TOKEN` | Turso 认证 Token | 是 | - |
+| `BLOB_STORE_NAME` | EdgeOne Blob 存储库名 | 否 | `memos` |
+| `STORAGE_TYPE` | 存储类型: `blob` \| `s3` | 否 | `blob` |
+| `S3_ENDPOINT` | S3 端点 | S3模式必填 | - |
+| `S3_REGION` | S3 区域 | 否 | `auto` |
+| `S3_BUCKET` | S3 桶名 | S3模式必填 | - |
+| `S3_ACCESS_KEY_ID` | S3 Access Key | S3模式必填 | - |
+| `S3_SECRET_ACCESS_KEY` | S3 Secret Key | S3模式必填 | - |
+| `S3_FORCE_PATH_STYLE` | 强制路径风格 | 否 | `true` |
+| `JWT_SECRET` | JWT 签名密钥 | 是 | - |
+| `INSTANCE_NAME` | 实例名称 | 否 | `memos-on-edgeone` |
+| `APP_VERSION` | 应用版本 | 否 | `1.0.0` |
 
-生产环境通过 `wrangler secret put` 设置敏感变量，非敏感变量在 `wrangler.toml` 的 `[vars]` 中配置。
+## 🔄 自动部署流程
 
-## Cloudflare 资源绑定
-
-| 绑定名 | 类型 | 用途 |
-|--------|------|------|
-| `DB` | D1 Database | 存储用户、备忘录、设置等所有结构化数据 |
-| `BUCKET` | R2 Bucket | 存储附件文件（图片、音频、文档） |
-| `AI` | Workers AI | 音频转写（@cf/openai/whisper） |
-| `ASSETS` | Static Assets | 托管前端构建产物 |
-
-## 自定义域名
-
-在 Cloudflare Dashboard 中为 Worker 添加自定义域名：
-
-1. Workers & Pages → cfmemos → Settings → Domains & Routes
-2. 添加自定义域名（需要域名已在 Cloudflare DNS 中）
-
-## 功能特性
-
-- Markdown 备忘录（支持标签、代码块、任务列表、Mermaid 图表）
-- 多用户支持（管理员/普通用户）
-- 备忘录可见性（私有/工作区/公开）
-- 文件附件上传（最大 100MB）
-- 备忘录分享链接（可设过期时间）
-- 备忘录评论和表情反应
-- 音频录制 + AI 转写
-- SSO 单点登录
-- 多语言支持（中文、英文等 30+ 语言）
-- 暗色/亮色主题
-- 日历热力图
-- 标签管理
-- Webhook 通知
-
-## 与原版 Memos 的区别
-
-| 项目 | 原版 Memos | 本项目 |
-|------|-----------|--------|
-| 后端 | Go + gRPC | Cloudflare Workers + Hono |
-| 数据库 | SQLite (本地文件) | Cloudflare D1 (托管 SQLite) |
-| 文件存储 | 本地/S3 | Cloudflare R2 |
-| AI | OpenAI/Gemini API | Cloudflare Workers AI |
-| 部署 | Docker/二进制 | `wrangler deploy` |
-| 运维 | 需要服务器 | 无服务器，零运维 |
-| 前端通信 | Connect RPC (protobuf) | REST JSON |
-
-## 常见问题
-
-**Q: 部署后访问显示空白页？**
-
-确认 `npm run build:web` 已执行且 `web/dist/` 目录存在。`wrangler deploy` 会自动上传该目录。
-
-**Q: 访问 `/api/*` 返回前端 404 页面？**
-
-确认 `wrangler.toml` 的 `[assets]` 配置包含：
-
-```toml
-run_worker_first = ["/api/*", "/file/*", "/u/*"]
+```
+推送代码到 GitHub main 分支
+        ↓
+EdgeOne 检测到推送
+        ↓
+自动执行安装命令: npm install && cd web && npm install
+        ↓
+自动执行构建命令: npm run build:web
+        ↓
+部署前端到 EdgeOne Pages CDN
+        ↓
+部署 Functions 到 EdgeOne 边缘节点
+        ↓
+分配/更新域名，部署完成
 ```
 
-否则 Cloudflare 静态资源层可能会先处理请求，并把不存在的 API 路径回退到 SPA 的 `index.html`，最终显示前端 404 页面，而不是进入 Worker API 路由。
+## 🆚 与原版 Memos / Cloudflare 版本对比
 
-**Q: 数据库报错 "table not found"？**
+| 项目 | 原版 Memos | memos-on-cloudflare | **memos-on-edgeone** |
+|------|-----------|---------------------|---------------------|
+| 后端 | Go + gRPC | Cloudflare Workers + Hono | **EdgeOne Pages Functions + Hono** |
+| 数据库 | SQLite (本地) | Cloudflare D1 | **Turso (libSQL) - HTTP 访问** |
+| 文件存储 | 本地/S3 | **Cloudflare R2 (强制)** | **EdgeOne Blob (默认) / S3 可选** |
+| 实例设置 | 数据库表 | 数据库表 | **Blob 存储** |
+| 用户设置 | 数据库表 | 数据库表 | **Blob 存储** |
+| AI | OpenAI/Gemini | Cloudflare Workers AI | **可配置外部 API** |
+| 部署 | Docker/二进制 | `wrangler deploy` | **Git 推送自动部署** |
+| 运维 | 需要服务器 | 无服务器 | **完全托管** |
 
-执行 `npm run db:migrate:remote` 初始化远程数据库 schema。
+## ❓ 常见问题
 
-**Q: 如何备份数据？**
+**Q: 为什么选择 Turso 而不是 Cloudflare D1？**  
+A: EdgeOne Pages Functions 无法直接绑定 Cloudflare D1。Turso 提供 HTTP API，可在任何边缘运行时访问，且 SQLite 兼容，迁移成本极低。
 
-```bash
-# 导出 D1 数据库
-wrangler d1 export cfmemos-db --remote --output=backup.sql
+**Q: EdgeOne Blob 有什么限制？**  
+A: 目前免费额度充足，适合个人/中小项目。大文件建议配置 S3 兼容存储。
 
-# R2 文件可通过 rclone 或 Cloudflare Dashboard 下载
-```
+**Q: 如何从 memos-on-cloudflare 迁移？**  
+参考 [MIGRATION-GUIDE.md](./MIGRATION-GUIDE.md)
 
-**Q: 上传大小限制？**
+**Q: 本地开发如何使用真实数据库？**  
+在 `.dev.vars` 中设置 `TURSO_DATABASE_URL` 和 `TURSO_AUTH_TOKEN` 指向生产/测试数据库。
 
-附件上传硬编码为 100MB。Workers 免费版单次请求体限制为 100MB，付费版无此限制。
+**Q: 推送代码后多久部署完成？**  
+通常 2-5 分钟，取决于构建时间。可在控制台查看部署日志。
 
-**Q: 免费额度够用吗？**
+**Q: 如何查看部署日志？**  
+EdgeOne 控制台 → 项目 → 部署记录 → 点击查看详细日志
 
-Cloudflare Workers Free Plan 包含：每天 10 万次请求、D1 5GB 存储、R2 10GB 存储 + 每月 1000 万次读取。个人使用完全足够。
+## 📄 相关文档
 
-## Star History
+- [EdgeOne 部署详细指南](./README-EDGEONE.md)
+- [从 Cloudflare 迁移指南](./MIGRATION-GUIDE.md)
 
-<a href="https://www.star-history.com/?repos=jkjoy%2Fmemos-on-cloudflare&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jkjoy/memos-on-cloudflare&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jkjoy/memos-on-cloudflare&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jkjoy/memos-on-cloudflare&type=date&legend=top-left" />
- </picture>
-</a>
-
-## License
+## 📜 License
 
 MIT
-
-</content>
-</invoke>
