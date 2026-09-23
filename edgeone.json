@@ -5,11 +5,8 @@
   "outputDirectory": "./web/dist",
   "nodeVersion": "22.11.0",
   "cloudFunctions": {
-    "nodejs": {
-      "externalNodeModules": [],
-      "includeFiles": [],
-      "maxDuration": 60
-    }
+    "includeFiles": [],
+    "maxDuration": 60
   },
   "redirects": [],
   "rewrites": [
