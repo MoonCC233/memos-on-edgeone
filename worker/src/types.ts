@@ -7,10 +7,7 @@ import { BlobDatabase } from "./db/blob-database";
 import { StorageProvider } from "./storage";
 
 export interface Env {
-  // Static assets (EdgeOne Pages)
-  ASSETS: Fetcher;
-  
-  // Blob Storage (EdgeOne Blob) - default
+  // Blob Storage (edgeOne Blob) - default
   BLOB_STORE_NAME?: string;
   
   // Optional S3-compatible storage
@@ -35,9 +32,11 @@ export interface Env {
   INSTANCE_NAME: string;
   APP_VERSION: string;
   
-  // Database (initialized lazily)
-  DB?: BlobDatabase;
-  BUCKET?: StorageProvider;
+  // Database & object storage — attached lazily by initProviders middleware
+  // before any route runs (see middleware/providers.ts), so from a route's
+  // perspective they are always present.
+  DB: BlobDatabase;
+  BUCKET: StorageProvider;
 }
 
 export interface UserPayload {
@@ -67,7 +66,7 @@ export type R2Bucket = StorageProvider;
 
 // KVNamespace compatibility interface
 export interface KVNamespace {
-  get(key: string, type?: 'text' | 'json' | 'arrayBuffer' | 'stream'): Promise<any>;
+  get<T = any>(key: string, type?: 'text' | 'json' | 'arrayBuffer' | 'stream'): Promise<T | null>;
   put(key: string, value: string | ReadableStream | ArrayBuffer, options?: KVNamespacePutOptions): Promise<void>;
   delete(key: string): Promise<void>;
   list(options?: KVNamespaceListOptions): Promise<KVNamespaceListResult>;

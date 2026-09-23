@@ -51,7 +51,11 @@ export async function exchangeOAuthCode(
     throw new Error(`Token exchange failed: ${tokenResp.status} ${errText}`);
   }
 
-  const tokenData = await tokenResp.json<{ access_token?: string; error?: string; error_description?: string }>();
+  const tokenData = (await tokenResp.json()) as {
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  };
   if (tokenData.error) {
     throw new Error(`OAuth error: ${tokenData.error} - ${tokenData.error_description || ""}`);
   }
@@ -68,7 +72,7 @@ export async function exchangeOAuthCode(
     throw new Error(`User info request failed: ${userInfoResp.status}${errText ? ` ${truncateErrorText(errText)}` : ""}`);
   }
 
-  const userInfo = await userInfoResp.json<Record<string, any>>();
+  const userInfo = (await userInfoResp.json()) as Record<string, any>;
   const mapping = config.fieldMapping || { identifier: "id", displayName: "name", email: "email", avatarUrl: "avatar_url" };
 
   const identifier = String(getNestedValue(userInfo, mapping.identifier) || "");
@@ -102,7 +106,7 @@ function getNestedValue(obj: Record<string, any>, path: string): any {
   return current;
 }
 
-function buildUserInfoHeaders(userInfoUrl: string, accessToken: string): HeadersInit {
+function buildUserInfoHeaders(userInfoUrl: string, accessToken: string): Record<string, string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     Accept: "application/json",

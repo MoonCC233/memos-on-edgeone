@@ -12,6 +12,7 @@ import { buildIdentityProviderName, extractIdentityProviderUid } from "../idp";
 import { deleteCachedKeys, getCachedJson, putCachedJson } from "../cache";
 import { getWebhookUrlValidationError, normalizeWebhookUrl } from "../webhook";
 import { BlobSettingsStore } from "../db/settings-blob";
+import * as settingDB from "../db/setting";
 
 type UserApp = { Bindings: Env; Variables: { user: UserPayload } };
 

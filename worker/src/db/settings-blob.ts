@@ -31,12 +31,17 @@ export class BlobSettingsStore {
   // Instance settings
   async getInstanceSetting(name: string): Promise<SystemSetting | null> {
     const all = await this.getAllInstanceSettings();
-    return all.find(s => s.name === name) || null;
+    const exact = all.find(s => s.name === name);
+    if (exact) return exact;
+    // The frontend stores full "instance/settings/KEY" names, while backend
+    // callers often pass a bare "KEY" — match on the last path segment.
+    const bare = (n: string) => n.split('/').pop() || n;
+    return all.find(s => bare(s.name) === bare(name)) || null;
   }
 
   async getAllInstanceSettings(): Promise<SystemSetting[]> {
     try {
-      const result = await this.storage.get(INSTANCE_SETTINGS_KEY, { type: 'json' });
+      const result = await this.storage.get(INSTANCE_SETTINGS_KEY);
       if (!result || !result.body) return [];
       const data = await this.parseJsonBody(result.body);
       return data.settings || [];
@@ -74,7 +79,7 @@ export class BlobSettingsStore {
   async getUserSettings(userId: number): Promise<UserSetting[]> {
     const key = `${USER_SETTINGS_PREFIX}${userId}.json`;
     try {
-      const result = await this.storage.get(key, { type: 'json' });
+      const result = await this.storage.get(key);
       if (!result || !result.body) return [];
       const data = await this.parseJsonBody(result.body);
       return data.settings || [];
@@ -103,6 +108,33 @@ export class BlobSettingsStore {
     const filtered = all.filter(s => s.key !== key);
     const keyPath = `${USER_SETTINGS_PREFIX}${userId}.json`;
     await this.storage.put(keyPath, JSON.stringify({ settings: filtered }), { contentType: 'application/json' });
+  }
+
+  /**
+   * Find one setting with the given key across ALL users' settings files.
+   * Used by PAT (personal access token) auth — tokens are stored in the blob
+   * settings store, not the legacy user_setting table.
+   */
+  async findUserSettingsByKey(key: string): Promise<UserSetting[]> {
+    try {
+      const listed = await this.storage.list(USER_SETTINGS_PREFIX);
+      const out: UserSetting[] = [];
+      for (const obj of listed.objects) {
+        try {
+          const result = await this.storage.get(obj.key);
+          if (!result || !result.body) continue;
+          const data = await this.parseJsonBody(result.body);
+          for (const s of (data.settings || []) as UserSetting[]) {
+            if (s.key === key) out.push(s);
+          }
+        } catch {
+          // Skip unreadable individual settings files.
+        }
+      }
+      return out;
+    } catch {
+      return [];
+    }
   }
 
   // Migration helper - import from database

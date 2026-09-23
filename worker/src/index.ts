@@ -5,7 +5,7 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import type { Env, EdgeOneContext } from "./types";
+import type { Env } from "./types";
 import { authRequired } from "./middleware/auth";
 import { initProviders } from "./middleware/providers";
 import { authRoutes } from "./routes/auth";
@@ -68,8 +68,9 @@ app.route("/api/v1/idps", idpRoutes);
 app.route("/api/v1/ai", aiRoutes);
 app.route("/api/v1/sse", sseRoutes);
 app.route("/file", fileRoutes);
-app.get("/u/:username", (c) => c.env.ASSETS.fetch(c.req.raw));
-app.get("/u/:username/", (c) => c.env.ASSETS.fetch(c.req.raw));
+// NOTE: /u/:username SPA pages are served by EdgeOne's static-asset SPA
+// fallback (edgeone.json rewrites), not by a function. Only the RSS
+// endpoints under /u and /explore are routed to Cloud Functions.
 app.route("/u", rssRoutes);
 app.route("/explore", exploreRssRoutes);
 
@@ -87,16 +88,23 @@ app.onError((err, c) => {
   return c.json({ code: 2, message: err.message || "Internal Server Error", details: [] }, 500);
 });
 
-// EdgeOne Pages Functions handler
-export default {
-  async fetch(request: Request, env: Env, ctx: { waitUntil: (p: Promise<any>) => void }): Promise<Response> {
-    // Initialize database and storage on first request
-    // This is done lazily to avoid issues with EdgeOne's module loading
-    return app.fetch(request, env, ctx);
-  }
-} satisfies ExportedHandler<Env>;
+// Named export: the Hono app, used by the EdgeOne Cloud Functions
+// entry points under /cloud-functions.
+export { app };
 
-// Type for EdgeOne Pages Functions
-type ExportedHandler<E> = {
-  fetch(request: Request, env: E, ctx: { waitUntil: (p: Promise<any>) => void }): Promise<Response>;
+// Default export kept for compatibility (e.g. local tooling that expects a
+// fetch-style handler).
+export default {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: { waitUntil: (p: Promise<any>) => void; passThroughOnException?: () => void }
+  ): Promise<Response> {
+    const executionCtx = {
+      waitUntil: ctx.waitUntil.bind(ctx),
+      passThroughOnException: ctx.passThroughOnException?.bind(ctx) ?? (() => {}),
+      props: {},
+    };
+    return app.fetch(request, env, executionCtx);
+  },
 };

@@ -1,7 +1,26 @@
+/**
+ * Settings Database — Blob storage facade.
+ *
+ * All reads/writes go through BlobSettingsStore (settings/instance.json and
+ * settings/users/{id}.json in Blob), which is also what the instance settings
+ * UI and user settings endpoints write to. The legacy D1 `system_setting` /
+ * `user_setting` SQL tables are gone — everything lives in Blob.
+ *
+ * Function signatures keep the old (db, ...) shape so route call sites are
+ * unchanged; `db` is the BlobDatabase, whose public `storage` provider is
+ * shared with all other blob access.
+ */
+
+import { BlobSettingsStore, SystemSetting, UserSetting } from "./settings-blob";
+
 export interface UserSettingRow {
   user_id: number;
   key: string;
   value: string;
+}
+
+function store(db: D1Database): BlobSettingsStore {
+  return new BlobSettingsStore(db.storage);
 }
 
 export async function getUserSetting(
@@ -9,21 +28,14 @@ export async function getUserSetting(
   userId: number,
   key: string
 ): Promise<UserSettingRow | null> {
-  return db
-    .prepare("SELECT * FROM user_setting WHERE user_id = ? AND key = ?")
-    .bind(userId, key)
-    .first<UserSettingRow>();
+  return store(db).getUserSetting(userId, key);
 }
 
 export async function listUserSettings(
   db: D1Database,
   userId: number
 ): Promise<UserSettingRow[]> {
-  const { results } = await db
-    .prepare("SELECT * FROM user_setting WHERE user_id = ?")
-    .bind(userId)
-    .all<UserSettingRow>();
-  return results;
+  return store(db).getUserSettings(userId);
 }
 
 export async function setUserSetting(
@@ -32,12 +44,7 @@ export async function setUserSetting(
   key: string,
   value: string
 ): Promise<void> {
-  await db
-    .prepare(
-      "INSERT INTO user_setting (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT (user_id, key) DO UPDATE SET value = excluded.value"
-    )
-    .bind(userId, key, value)
-    .run();
+  return store(db).setUserSetting(userId, key, value);
 }
 
 export async function deleteUserSetting(
@@ -45,13 +52,10 @@ export async function deleteUserSetting(
   userId: number,
   key: string
 ): Promise<void> {
-  await db
-    .prepare("DELETE FROM user_setting WHERE user_id = ? AND key = ?")
-    .bind(userId, key)
-    .run();
+  return store(db).deleteUserSetting(userId, key);
 }
 
-// --- System Settings ---
+// --- Instance settings ---
 
 export interface SystemSettingRow {
   name: string;
@@ -63,19 +67,13 @@ export async function getSystemSetting(
   db: D1Database,
   name: string
 ): Promise<SystemSettingRow | null> {
-  return db
-    .prepare("SELECT * FROM system_setting WHERE name = ?")
-    .bind(name)
-    .first<SystemSettingRow>();
+  return store(db).getInstanceSetting(name);
 }
 
 export async function listSystemSettings(
   db: D1Database
 ): Promise<SystemSettingRow[]> {
-  const { results } = await db
-    .prepare("SELECT * FROM system_setting")
-    .all<SystemSettingRow>();
-  return results;
+  return store(db).getAllInstanceSettings();
 }
 
 export async function setSystemSetting(
@@ -84,12 +82,7 @@ export async function setSystemSetting(
   value: string,
   description?: string
 ): Promise<void> {
-  await db
-    .prepare(
-      "INSERT INTO system_setting (name, value, description) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value"
-    )
-    .bind(name, value, description || "")
-    .run();
+  return store(db).setInstanceSetting(name, value, description);
 }
 
 const INSTANCE_SETTING_PREFIX = "instance/settings/";
@@ -111,20 +104,7 @@ export async function getInstanceSetting(
   db: D1Database,
   name: string
 ): Promise<SystemSettingRow | null> {
-  const candidates = getInstanceSettingStorageNames(name);
-  const placeholders = candidates.map(() => "?").join(", ");
-  const { results } = await db
-    .prepare(`SELECT * FROM system_setting WHERE name IN (${placeholders})`)
-    .bind(...candidates)
-    .all<SystemSettingRow>();
-
-  for (const candidate of candidates) {
-    const setting = results.find((row) => row.name === candidate);
-    if (!setting) continue;
-    return {
-      ...setting,
-      name: normalizeInstanceSettingName(setting.name),
-    };
-  }
-  return null;
+  // BlobSettingsStore matches exact names and bare last-segment names, so
+  // both "GENERAL" and "instance/settings/GENERAL" resolve to the same row.
+  return store(db).getInstanceSetting(name);
 }

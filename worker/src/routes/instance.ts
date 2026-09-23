@@ -4,7 +4,7 @@ import { authOptional, authRequired } from "../middleware/auth";
 import * as userDB from "../db/user";
 import { getAppVersion } from "../version";
 import { deleteCachedKeys, getCachedJson, putCachedJson } from "../cache";
-import { BlobSettingsStore } from "../db/settings-blob";
+import { BlobSettingsStore, createSettingsStore } from "../db/settings-blob";
 
 type InstApp = { Bindings: Env; Variables: { user: UserPayload } };
 
@@ -46,12 +46,11 @@ function sanitizePublicInstanceSettingValue(name: string, value: string): string
   }
 }
 
-// Helper to get settings store from context
-function getSettingsStore(c: any): BlobSettingsStore {
+// Helper to get settings store from context (async — createSettingsStore
+// initializes the storage provider lazily)
+async function getSettingsStore(c: any): Promise<BlobSettingsStore> {
   if (!c.settingsStore) {
-    // Initialize lazily - in production this would be done in middleware
-    const { createSettingsStore } = require("../db/settings-blob");
-    c.settingsStore = createSettingsStore(c.env);
+    c.settingsStore = await createSettingsStore(c.env);
   }
   return c.settingsStore;
 }
@@ -257,13 +256,12 @@ instanceRoutes.get("/stats", authRequired, async (c) => {
   const storageRow = await c.env.DB.prepare("SELECT COALESCE(SUM(size), 0) AS total FROM attachment").first<{ total: number }>();
   const localStorageBytes = storageRow?.total ?? 0;
 
-  // For Turso, we can't easily get database size via PRAGMA
-  // Return -1 to indicate unknown
+  // Blob storage size is not queryable — return -1 to indicate unknown
   const databaseSize = -1;
 
   const response = {
     database: {
-      driver: "turso-libsql",
+      driver: "edgeone-blob",
       sizeBytes: databaseSize,
     },
     localStorageBytes,

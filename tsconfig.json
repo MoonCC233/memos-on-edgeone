@@ -11,8 +11,8 @@
     "isolatedModules": true,
     "noEmit": true,
     "lib": ["ESNext"],
-    "types": ["@cloudflare/workers-types"]
+    "types": ["node"]
   },
-  "include": ["worker/src/**/*.ts"],
+  "include": ["worker/src/**/*.ts", "cloud-functions/**/*.ts"],
   "exclude": ["node_modules", "web"]
 }
