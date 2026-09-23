@@ -1,15 +1,6 @@
 # EdgeOne Makers Local Development Configuration
 # Copy this file to .dev.vars and fill in your values
 
-# Turso (libSQL) Database - Local Development
-# Create a local database at https://turso.tech or use SQLite locally
-TURSO_DATABASE_URL_LOCAL=libsql://localhost:8080
-TURSO_AUTH_TOKEN_LOCAL=
-
-# Turso (libSQL) Database - Production (for remote migrations)
-TURSO_DATABASE_URL=libsql://your-db.turso.io
-TURSO_AUTH_TOKEN=your-auth-token
-
 # EdgeOne Blob Storage (default)
 BLOB_STORE_NAME=memos
 
@@ -29,8 +20,3 @@ JWT_SECRET=your-super-secret-jwt-key-here
 # Instance Configuration
 INSTANCE_NAME=memos-on-edgeone
 APP_VERSION=1.0.0
-
-# Optional: Cloudflare Workers AI (for transcription)
-# AI binding not available on EdgeOne, use external API instead
-# AI_API_URL=https://api.openai.com/v1
-# AI_API_KEY=your-openai-key
