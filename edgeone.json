@@ -5,8 +5,9 @@
   "outputDirectory": "./web/dist",
   "nodeVersion": "22.11.0",
   "cloudFunctions": {
-    "includeFiles": [],
-    "maxDuration": 60
+    "nodejs": {
+      "maxDuration": 60
+    }
   },
   "rewrites": [
     {
@@ -16,26 +17,12 @@
   ],
   "headers": [
     {
-      "source": "**/*.@(eot|otf|ttf|ttc|woff|woff2|font.css)",
+      "source": "/assets/*",
       "headers": [
         {
           "key": "Access-Control-Allow-Origin",
           "value": "*"
-        }
-      ]
-    },
-    {
-      "source": "**/*.@(jpg|jpeg|gif|png|webp|avif|ico|bmp|svg)",
-      "headers": [
-        {
-          "key": "Access-Control-Allow-Origin",
-          "value": "*"
-        }
-      ]
-    },
-    {
-      "source": "**/*.@(js|css|mjs|js.map|css.map)",
-      "headers": [
+        },
         {
           "key": "Cache-Control",
           "value": "max-age=604800"
@@ -43,8 +30,12 @@
       ]
     },
     {
-      "source": "*.@(eot|otf|ttf|ttc|woff|woff2)",
+      "source": "/*.png",
       "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
         {
           "key": "Cache-Control",
           "value": "max-age=604800"
@@ -52,8 +43,12 @@
       ]
     },
     {
-      "source": "**/*.@(jpg|jpeg|gif|png|webp|avif|ico|bmp)",
+      "source": "/*.webp",
       "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
         {
           "key": "Cache-Control",
           "value": "max-age=604800"
