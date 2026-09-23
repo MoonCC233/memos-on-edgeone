@@ -58,6 +58,14 @@ export interface StorageProvider {
 }
 
 // EdgeOne Blob Provider
+//
+// Notes on the @edgeone/pages-blob SDK (v0.0.16):
+//  - get() returns the typed value directly (string / ArrayBuffer /
+//    ReadableStream / ...), NOT a { body } wrapper.
+//  - set() accepts no contentType/metadata options; attachment content types
+//    are served from DB records (AttachmentRow.type) instead.
+//  - Reads default to "eventual" (CDN-cached) consistency; we force "strong"
+//    on every read so read-after-write holds for the JSON table blobs.
 export class EdgeOneBlobProvider implements StorageProvider {
   private store: any;
 
@@ -71,30 +79,47 @@ export class EdgeOneBlobProvider implements StorageProvider {
     return this.store;
   }
 
-  async put(key: string, body: ArrayBuffer | ReadableStream | string, options?: { contentType?: string; metadata?: Record<string, string> }): Promise<void> {
+  async put(
+    key: string,
+    body: ArrayBuffer | ReadableStream | string,
+    _options?: { contentType?: string; metadata?: Record<string, string> }
+  ): Promise<void> {
     const store = await this.getStore();
-    const contentType = options?.contentType || 'application/octet-stream';
-    await store.set(key, body, { 
-      contentType,
-      metadata: options?.metadata 
-    });
+    await store.set(key, body);
   }
 
-  async get(key: string, options?: { range?: { offset: number; length: number } }): Promise<GetObjectResult | null> {
+  async get(
+    key: string,
+    options?: { range?: { offset: number; length: number } }
+  ): Promise<GetObjectResult | null> {
     const store = await this.getStore();
-    const result = await store.get(key, { 
-      type: 'stream',
-      range: options?.range ? [options.range.offset, options.range.offset + options.range.length - 1] : undefined
-    });
-    
-    if (!result) return null;
-    
-    return {
-      body: result.body,
-      contentType: result.contentType,
-      contentLength: result.contentLength,
-      metadata: result.metadata
-    };
+    const useRange = !!options?.range;
+    const value = useRange
+      ? await store.get(key, { type: 'arrayBuffer', consistency: 'strong' })
+      : await store.get(key, { type: 'stream', consistency: 'strong' });
+
+    if (value === null || value === undefined) return null;
+
+    if (value instanceof ArrayBuffer) {
+      let buf = value;
+      if (options?.range) {
+        const { offset, length } = options.range;
+        const start = Math.min(Math.max(offset, 0), buf.byteLength);
+        buf = buf.slice(start, start + Math.max(length, 0));
+      }
+      const chunk = new Uint8Array(buf);
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(chunk);
+          controller.close();
+        },
+      });
+      return { body, contentLength: chunk.byteLength };
+    }
+
+    // ReadableStream body; content length is unknown without an extra
+    // metadata round trip — callers size responses from DB records.
+    return { body: value, contentLength: undefined };
   }
 
   async delete(key: string): Promise<void> {
@@ -102,24 +127,27 @@ export class EdgeOneBlobProvider implements StorageProvider {
     await store.delete(key);
   }
 
-  async list(prefix: string, options?: { delimiter?: string; maxKeys?: number; token?: string }): Promise<ListObjectsResult> {
+  async list(
+    prefix: string,
+    options?: { delimiter?: string; maxKeys?: number; token?: string }
+  ): Promise<ListObjectsResult> {
     const store = await this.getStore();
+    const paginate = !options?.token;
     const result = await store.list({
       prefix,
-      delimiter: options?.delimiter,
-      maxKeys: options?.maxKeys,
-      token: options?.token
+      directories: true,
+      limit: options?.maxKeys,
+      cursor: options?.token,
+      paginate,
     });
-    
     return {
       objects: (result.blobs || []).map((b: any) => ({
         key: b.key,
-        size: b.size,
-        lastModified: new Date(b.lastModified),
-        contentType: b.contentType
+        size: 0,
+        lastModified: new Date(0),
       })),
-      prefixes: result.prefixes || [],
-      nextToken: result.token
+      prefixes: result.directories || [],
+      nextToken: result.cursor,
     };
   }
 
@@ -127,20 +155,20 @@ export class EdgeOneBlobProvider implements StorageProvider {
     const store = await this.getStore();
     const result = await store.createUploadUrl(key, {
       expireSeconds: options?.expireSeconds || 3600,
-      contentType: options?.contentType
+      contentType: options?.contentType,
     });
-    
     return {
       url: result.url,
       key: result.key,
-      expiresAt: result.expiresAt
+      expiresAt: result.expiresAt,
     };
   }
 
   async exists(key: string): Promise<boolean> {
     const store = await this.getStore();
-    const result = await store.get(key, { type: 'json' });
-    return result !== null;
+    // Cheap HEAD-style probe instead of downloading the body.
+    const meta = await store.getMetadata(key, { consistency: 'strong' });
+    return meta !== null && meta !== undefined;
   }
 }
 

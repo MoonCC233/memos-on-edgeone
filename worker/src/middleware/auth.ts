@@ -2,6 +2,8 @@ import { createMiddleware } from "hono/factory";
 import type { Env, UserPayload } from "../types";
 import { verifyAccessToken } from "../auth/jwt";
 import { hashPAT } from "../auth/pat";
+import { createSettingsStore } from "../db/settings-blob";
+import { findUserById } from "../db/user";
 
 type AuthEnv = {
   Bindings: Env;
@@ -41,23 +43,17 @@ function extractAuthToken(headers: {
   return undefined;
 }
 
-async function findUserByPATHash(db: D1Database, tokenHash: string): Promise<PATLookupResult | null> {
-  const { results } = await db.prepare(
-    `SELECT us.user_id, us.value, u.username, u.role, u.row_status
-     FROM user_setting us
-     JOIN user u ON u.id = us.user_id
-     WHERE us.key = 'personal_access_tokens'`
-  ).all<{
-    user_id: number;
-    value: string;
-    username: string;
-    role: string;
-    row_status: string;
-  }>();
+async function findUserByPATHash(env: Env, tokenHash: string): Promise<PATLookupResult | null> {
+  // PATs live in the blob settings store (written by users.ts via
+  // BlobSettingsStore), NOT the legacy user_setting SQL table — so scan the
+  // per-user settings files for personal_access_tokens entries.
+  const store = await createSettingsStore(env);
+  const rows = await store.findUserSettingsByKey("personal_access_tokens");
 
-  for (const row of results || []) {
+  for (const row of rows) {
     try {
-      if (row.row_status !== "NORMAL") {
+      const user = await findUserById(env.DB, row.user_id);
+      if (!user || user.row_status !== "NORMAL") {
         continue;
       }
 
@@ -72,10 +68,10 @@ async function findUserByPATHash(db: D1Database, tokenHash: string): Promise<PAT
         }
 
         return {
-          user_id: row.user_id,
-          username: row.username,
-          role: row.role,
-          row_status: row.row_status,
+          user_id: user.id,
+          username: user.username,
+          role: user.role,
+          row_status: user.row_status,
         };
       }
     } catch {
@@ -96,7 +92,7 @@ export const authRequired = createMiddleware<AuthEnv>(async (c, next) => {
   // Check if it's a PAT
   if (token.startsWith("memos_pat_")) {
     const hash = await hashPAT(token);
-    const result = await findUserByPATHash(c.env.DB, hash);
+    const result = await findUserByPATHash(c.env, hash);
 
     if (!result) {
       return c.json({ code: 16, message: "invalid access token", details: [] }, 401);
@@ -131,7 +127,7 @@ export const authOptional = createMiddleware<AuthEnv>(async (c, next) => {
   if (token) {
     if (token.startsWith("memos_pat_")) {
       const hash = await hashPAT(token);
-      const result = await findUserByPATHash(c.env.DB, hash);
+      const result = await findUserByPATHash(c.env, hash);
 
       if (result) {
         c.set("user", {

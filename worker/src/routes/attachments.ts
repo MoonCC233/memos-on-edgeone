@@ -56,7 +56,7 @@ function decodeBase64Content(content: string): ArrayBuffer {
 
 type MemoTargetResolution = { memoId: number | null } | { error: string; status: 403 | 404 };
 
-async function resolveWritableMemoId(db: any, user: UserPayload, memoName?: string | number | null): Promise<MemoTargetResolution> {
+async function resolveWritableMemoId(db: D1Database, user: UserPayload, memoName?: string | number | null): Promise<MemoTargetResolution> {
   if (memoName === undefined || memoName === null || memoName === "") {
     return { memoId: null };
   }
@@ -75,7 +75,7 @@ async function resolveWritableMemoId(db: any, user: UserPayload, memoName?: stri
   return { memoId: memo.id };
 }
 
-async function findAttachmentByToken(db: any, token: string): Promise<AttachmentRow | null> {
+async function findAttachmentByToken(db: D1Database, token: string): Promise<AttachmentRow | null> {
   const normalized = token.startsWith("attachments/") ? token.slice("attachments/".length) : token;
   return db.prepare("SELECT * FROM attachment WHERE uid = ? OR id = ?")
     .bind(normalized, Number(normalized) || 0)
@@ -94,7 +94,7 @@ function chunkValues<T>(values: T[], size: number): T[][] {
   return chunks;
 }
 
-async function findAttachmentsByTokens(db: any, tokens: string[]): Promise<AttachmentRow[]> {
+async function findAttachmentsByTokens(db: D1Database, tokens: string[]): Promise<AttachmentRow[]> {
   const normalizedTokens = [...new Set(tokens.map((token) => token.startsWith("attachments/") ? token.slice("attachments/".length) : token).filter(Boolean))];
   const attachmentsById = new Map<number, AttachmentRow>();
   if (normalizedTokens.length === 0) {
@@ -124,7 +124,7 @@ async function findAttachmentsByTokens(db: any, tokens: string[]): Promise<Attac
   return [...attachmentsById.values()];
 }
 
-async function getAttachmentReadDeniedStatus(db: any, att: AttachmentRow, user: UserPayload | undefined): Promise<401 | 403 | undefined> {
+async function getAttachmentReadDeniedStatus(db: D1Database, att: AttachmentRow, user: UserPayload | undefined): Promise<401 | 403 | undefined> {
   if (!att.memo_id) {
     return user && (att.creator_id === user.id || user.role === "ADMIN") ? undefined : 403;
   }

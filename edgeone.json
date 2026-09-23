@@ -8,41 +8,55 @@
     "includeFiles": [],
     "maxDuration": 60
   },
-  "redirects": [],
   "rewrites": [
     {
-      "source": "/api/*",
-      "destination": "/api/:splat"
-    },
-    {
-      "source": "/file/*",
-      "destination": "/file/:splat"
-    },
-    {
-      "source": "/u/*",
-      "destination": "/u/:splat"
+      "source": "/*",
+      "destination": "/index.html"
     }
   ],
   "headers": [
     {
-      "source": "/*",
+      "source": "**/*.@(eot|otf|ttf|ttc|woff|woff2|font.css)",
       "headers": [
         {
-          "key": "X-Frame-Options",
-          "value": "DENY"
-        },
-        {
-          "key": "X-Content-Type-Options",
-          "value": "nosniff"
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
         }
       ]
     },
     {
-      "source": "/assets/*",
+      "source": "**/*.@(jpg|jpeg|gif|png|webp|avif|ico|bmp|svg)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        }
+      ]
+    },
+    {
+      "source": "**/*.@(js|css|mjs|js.map|css.map)",
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "public, max-age=31536000, immutable"
+          "value": "max-age=604800"
+        }
+      ]
+    },
+    {
+      "source": "*.@(eot|otf|ttf|ttc|woff|woff2)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "max-age=604800"
+        }
+      ]
+    },
+    {
+      "source": "**/*.@(jpg|jpeg|gif|png|webp|avif|ico|bmp)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "max-age=604800"
         }
       ]
     }
