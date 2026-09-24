@@ -5,9 +5,11 @@
   "outputDirectory": "./web/dist",
   "nodeVersion": "22.11.0",
   "cloudFunctions": {
-    "nodejs": {
-      "maxDuration": 60
-    }
+    "maxDuration": 60,
+    "externalNodeModules": [
+      "@aws-sdk/client-s3",
+      "@aws-sdk/s3-request-presigner"
+    ]
   },
   "rewrites": [
     {
