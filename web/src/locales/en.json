@@ -423,6 +423,7 @@
       "add-provider": "Add provider",
       "api-key": "API key",
       "api-key-required": "API key is required.",
+      "api-key-description": "API key sent to the endpoint as a Bearer token. Stored on this instance and never returned by the API.",
       "byok-description": "Connect OpenAI or Gemini with an API key from your own account. Memos calls the provider directly from this server.",
       "byok-key-note": "Use a key from your provider account; Memos does not bundle shared AI credentials.",
       "byok-label": "BYOK",
@@ -430,6 +431,8 @@
       "byok-storage-note": "Keys stay on this instance and are masked when settings are loaded.",
       "byok-title": "Use your own AI account",
       "configured": "Configured",
+      "custom-api-description": "Connect an OpenAI-compatible API with your own endpoint and API key. The server calls it directly for AI features such as audio transcription.",
+      "custom-api-title": "Custom AI API",
       "current-key": "Current key: {{key}}",
       "default-endpoint": "Default endpoint",
       "delete-provider": "Delete AI provider `{{title}}`?",
@@ -437,7 +440,9 @@
       "dialog-description": "Add a key from your own provider account. Memos uses built-in models for each provider; leave the API key blank while editing to keep the stored key.",
       "edit-provider": "Edit provider",
       "endpoint": "Endpoint",
+      "endpoint-description": "OpenAI-compatible base URL, e.g. https://api.openai.com/v1 or any compatible gateway.",
       "endpoint-hint": "Leave empty to use the official provider endpoint.",
+      "endpoint-required": "API endpoint is required.",
       "integrations-description": "Provider keys are supplied by the instance owner and used by server-side AI features.",
       "integrations-title": "AI integrations",
       "keep-api-key": "Leave blank to keep the existing key",
@@ -464,8 +469,8 @@
       "transcription-title": "Transcription",
       "transcription-warning-no-key": "The selected provider has no API key set. Edit the integration above to add one.",
       "transcription-enable": "Enable AI transcription",
-      "transcription-enable-tooltip": "Enable audio transcription using Cloudflare Workers AI",
-      "cloudflare-ai-description": "AI features are powered by Cloudflare Workers AI. Audio transcription uses the Whisper model running on Cloudflare's edge network."
+      "transcription-enable-tooltip": "Enable audio transcription using the configured AI API",
+      "cloudflare-ai-description": "AI features are powered by a custom OpenAI-compatible API configured by the instance admin. Audio transcription is called directly by this server."
     },
     "instance": {
       "access-description": "Control sign-up, authentication, profile editing, and calendar defaults for this instance.",

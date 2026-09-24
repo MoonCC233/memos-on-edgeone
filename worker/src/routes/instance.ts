@@ -70,11 +70,16 @@ function sanitizeStorageSettingValue(value: string): string {
 }
 
 function sanitizeSettingsList(list: Array<{ name: string; value: string; description?: string }>) {
-  return list.map((setting) =>
-    getInstanceSettingKey(setting.name) === "STORAGE"
-      ? { ...setting, value: sanitizeStorageSettingValue(setting.value) }
-      : setting
-  );
+  return list.map((setting) => {
+    const key = getInstanceSettingKey(setting.name);
+    if (key === "STORAGE") {
+      return { ...setting, value: sanitizeStorageSettingValue(setting.value) };
+    }
+    if (key === "AI") {
+      return { ...setting, value: sanitizePublicInstanceSettingValue("AI", setting.value) };
+    }
+    return setting;
+  });
 }
 
 // Helper to get settings store from context (async — createSettingsStore
@@ -179,6 +184,9 @@ instanceRoutes.get("/settings/*", authOptional, async (c) => {
   if (cached) {
     if (key === "STORAGE" && typeof cached.value === "string") {
       cached.value = sanitizeStorageSettingValue(cached.value);
+    } else if (key === "AI" && typeof cached.value === "string") {
+      // Idempotent — also masks any legacy raw cache entries.
+      cached.value = sanitizePublicInstanceSettingValue("AI", cached.value);
     }
     return c.json(cached);
   }
@@ -193,7 +201,9 @@ instanceRoutes.get("/settings/*", authOptional, async (c) => {
   const value =
     key === "STORAGE"
       ? sanitizeStorageSettingValue(setting.value)
-      : PUBLIC_INSTANCE_SETTING_KEYS.has(key) && !isAdmin
+      : PUBLIC_INSTANCE_SETTING_KEYS.has(key)
+        // Mask secrets for every role (the admin UI never needs raw keys, and
+        // a blank key on update means "keep the stored one").
         ? sanitizePublicInstanceSettingValue(key, setting.value)
         : setting.value;
   const response = {
@@ -323,6 +333,51 @@ instanceRoutes.patch("/settings/*", authRequired, async (c) => {
     }
   }
 
+  if (key === "AI") {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(body.value);
+    } catch {
+      return c.json({ error: "Invalid setting value: not valid JSON" }, 400);
+    }
+    if (parsed && typeof parsed === "object") {
+      const existing = await settingsStore.getInstanceSetting(name);
+      let storedProviders: any[] = [];
+      try {
+        const arr = JSON.parse(existing?.value || "{}")?.providers;
+        storedProviders = Array.isArray(arr) ? arr : [];
+      } catch {
+        storedProviders = [];
+      }
+
+      const providers = (Array.isArray(parsed.providers) ? parsed.providers : []).filter(Boolean);
+      for (const provider of providers) {
+        // Read-time flags are recomputed by the sanitizer; never store them.
+        delete provider.apiKeySet;
+        delete provider.apiKeyHint;
+        // The API never returns stored keys, so a blank key means "keep the
+        // existing one" (matched by provider id).
+        if (!provider.apiKey) {
+          const stored = storedProviders.find((p: any) => p && p.id === provider.id);
+          if (stored?.apiKey) provider.apiKey = stored.apiKey;
+        }
+      }
+      parsed.providers = providers;
+
+      const transcription = parsed.transcription;
+      if (transcription && transcription.providerId) {
+        const provider = providers.find((p: any) => p.id === transcription.providerId);
+        if (!provider) {
+          return c.json({ error: "Transcription provider not found in providers list" }, 400);
+        }
+        if (!String(provider.endpoint || "").trim()) {
+          return c.json({ error: "Transcription provider endpoint is required" }, 400);
+        }
+      }
+      body.value = JSON.stringify(parsed);
+    }
+  }
+
   await settingsStore.setInstanceSetting(name, body.value, body.description);
   
   const settingCacheKeys =
@@ -334,7 +389,13 @@ instanceRoutes.patch("/settings/*", authRequired, async (c) => {
     "instance:settings",
     ...settingCacheKeys,
   ]);
-  return c.json({ name, value: key === "STORAGE" ? sanitizeStorageSettingValue(body.value) : body.value });
+  const storedValue =
+    key === "STORAGE"
+      ? sanitizeStorageSettingValue(body.value)
+      : key === "AI"
+        ? sanitizePublicInstanceSettingValue("AI", body.value)
+        : body.value;
+  return c.json({ name, value: storedValue });
 });
 
 instanceRoutes.get("/stats", authRequired, async (c) => {
