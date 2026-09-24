@@ -523,9 +523,22 @@ export const instanceServiceClient = {
     const setting = req.setting || {};
     const name = setting.name; // e.g. "instance/settings/GENERAL"
     const innerValue = setting.value?.value ?? setting.value ?? {};
-    await apiRequest<any>("PATCH", `/api/v1/${name}`, {
+    const data = await apiRequest<any>("PATCH", `/api/v1/${name}`, {
       value: JSON.stringify(innerValue),
     });
+    // Prefer the server's stored value: it reflects server-side merges and
+    // sanitization (e.g. STORAGE never echoes the S3 secret back, and reports
+    // `accessKeySecretSet` so the UI knows a secret is already saved).
+    let finalValue = innerValue;
+    try {
+      if (typeof data?.value === "string") {
+        finalValue = JSON.parse(data.value);
+      } else if (data?.value && typeof data.value === "object") {
+        finalValue = data.value;
+      }
+    } catch {
+      // Keep the request value when the response isn't valid JSON.
+    }
     const keyName = name.split("/").pop() || "";
     const caseMap: Record<string, string> = {
       GENERAL: "generalSetting",
@@ -539,7 +552,7 @@ export const instanceServiceClient = {
       name,
       value: {
         case: caseMap[keyName] || setting.value?.case,
-        value: innerValue,
+        value: finalValue,
       },
     };
   },

@@ -5,6 +5,7 @@ import { authOptional } from "../middleware/auth";
 import { verifyRefreshToken } from "../auth/jwt";
 import * as shareDB from "../db/share";
 import { StorageProvider, GetObjectResult } from "../storage";
+import { getAttachmentStorage } from "../storage/resolve";
 
 type FileApp = { Bindings: Env; Variables: { user: UserPayload } };
 
@@ -99,7 +100,7 @@ fileRoutes.get("/attachments/:uid/:filename", authOptional, async (c) => {
 
   const att = await c.env.DB.prepare(
     "SELECT * FROM attachment WHERE uid = ?"
-  ).bind(uid).first<{ id: number; creator_id: number; type: string; size: number; reference: string; memo_id: number | null; filename: string }>();
+  ).bind(uid).first<{ id: number; creator_id: number; type: string; size: number; reference: string; memo_id: number | null; filename: string; storage_type: string }>();
 
   if (!att) return c.notFound();
 
@@ -141,7 +142,7 @@ fileRoutes.get("/attachments/:uid/:filename", authOptional, async (c) => {
   }
 
   const range = parseRangeHeader(c.req.header("Range"), att.size);
-  const storage: StorageProvider = c.env.BUCKET;
+  const storage: StorageProvider = await getAttachmentStorage(c.env, att.storage_type);
   
   const getResult: GetObjectResult | null = range
     ? await storage.get(att.reference, { range: { offset: range.start, length: range.length } })
