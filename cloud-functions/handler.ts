@@ -5,7 +5,16 @@
  * This file exports no onRequest handler, so the builder treats it as an
  * auxiliary module (imported by the route entry files, never routed itself).
  */
-import { app } from "../worker/src/index";
+// NOTE: the specifier is deliberately BARE, not "../worker/src/index".
+// The EdgeOne builder's framework detector only recurses through relative
+// imports (Sit/Jbe) and its esbuild probe (TXr) resolves without nodePaths,
+// so a bare specifier makes both detection passes bail out with
+// isFramework:false. That is required: hono framework mode rewrites the
+// request URL to a prefix-stripped path and expects a default-exported app
+// (`return stdin_default`), which breaks this app and caused 502s.
+// The actual bundler (ZKe) resolves the specifier via nodePaths:[cwd].
+// The type comes from the ambient declaration in worker-src.d.ts.
+import { app } from "worker/src/index";
 
 export async function handleRequest(context: any): Promise<Response> {
   // Create a mutable copy of the environment.
