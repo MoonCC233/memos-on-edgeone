@@ -442,13 +442,31 @@ export class BlobDatabase {
     const results: any[] = [];
     let changed = false;
 
-    for (const group of query.valueGroups) {
-      const row: any = { ...defaults };
-      for (let ci = 0; ci < query.columns.length; ci++) {
+    // Bind every placeholder up front, in SQLite textual order: all VALUES
+    // placeholders (group-major, column-minor) first, then any ON CONFLICT
+    // DO UPDATE placeholders (the conflict clause follows VALUES in source).
+    // NOTE: bindExpr returns a rewritten expression and never mutates its
+    // input — the return value MUST be used. Discarding it used to leave
+    // { k: "param" } in the tree, making evalExpr throw "Unbound SQL
+    // parameter" and 500ing every parameterized INSERT.
+    const boundGroups = query.valueGroups.map((group) =>
+      query.columns.map((_col, ci) => {
         const raw = group[ci];
-        if (raw === undefined) continue;
-        const expr = parseValueRaw(raw);
-        bindExpr(expr, params, st);
+        if (raw === undefined) return undefined;
+        return bindExpr(parseValueRaw(raw), params, st);
+      })
+    );
+    const boundConflictSet = conflictSet.map((a) => ({
+      column: a.column,
+      expr: bindExpr(a.expr, params, st),
+    }));
+
+    for (let gi = 0; gi < boundGroups.length; gi++) {
+      const row: any = { ...defaults };
+      const boundGroup = boundGroups[gi];
+      for (let ci = 0; ci < query.columns.length; ci++) {
+        const expr = boundGroup[ci];
+        if (expr === undefined) continue;
         row[query.columns[ci]] = evalExpr(expr, null);
       }
 
@@ -462,7 +480,7 @@ export class BlobDatabase {
         );
         if (existing) {
           if (action === "nothing") continue; // skipped; RETURNING gets nothing
-          for (const a of conflictSet) {
+          for (const a of boundConflictSet) {
             existing[a.column] = evalExpr(a.expr, null, row);
           }
           changed = true;
@@ -843,9 +861,11 @@ function parseValueRaw(raw: string): Expr {
 
 /** Parse, bind, and evaluate a scalar UPDATE SET value. */
 function evalSetValue(raw: string, params: any[], st: { i: number }): any {
-  const expr = parseValueRaw(raw);
-  bindExpr(expr, params, st);
-  return evalExpr(expr, null);
+  // bindExpr is pure — it returns the rewritten expression, so it must be
+  // used directly. Dropping the return value here (as this function did
+  // before) leaves { k: "param" } unbound and evalExpr throws
+  // "Unbound SQL parameter", 500ing every parameterized UPDATE.
+  return evalExpr(bindExpr(parseValueRaw(raw), params, st), null);
 }
 
 // ---------------------------------------------------------------------------

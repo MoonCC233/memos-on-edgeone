@@ -8,6 +8,13 @@ const ACCESS_TTL = 15 * 60;
 const REFRESH_TTL = 30 * 24 * 60 * 60;
 
 function getSecretKey(secret: string): Uint8Array {
+  if (!secret) {
+    // Without this guard jose would encode "" and fail later with the
+    // cryptic "Zero-length key is not supported".
+    throw new Error(
+      "JWT_SECRET is not configured — set the JWT_SECRET environment variable in the EdgeOne console"
+    );
+  }
   return new TextEncoder().encode(secret);
 }
 
