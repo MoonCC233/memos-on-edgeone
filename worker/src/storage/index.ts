@@ -176,10 +176,13 @@ export class EdgeOneBlobProvider implements StorageProvider {
 export class S3Provider implements StorageProvider {
   private s3Client: any;
   private bucket: string;
+  // Client construction is async (dynamic SDK import); every method awaits
+  // this promise so the client is guaranteed to exist before first use.
+  private ready: Promise<void>;
 
   constructor(config: StorageConfig) {
     this.bucket = config.s3Bucket!;
-    this.initClient(config);
+    this.ready = this.initClient(config);
   }
 
   private async initClient(config: StorageConfig) {
@@ -195,13 +198,18 @@ export class S3Provider implements StorageProvider {
     });
   }
 
+  private async getClient(): Promise<any> {
+    await this.ready;
+    return this.s3Client;
+  }
+
   async put(key: string, body: ArrayBuffer | ReadableStream | string, options?: { contentType?: string; metadata?: Record<string, string> }): Promise<void> {
     const { PutObjectCommand } = await import('@aws-sdk/client-s3');
     const bodyBuffer = body instanceof ArrayBuffer ? Buffer.from(body) : 
                        body instanceof ReadableStream ? await this.streamToBuffer(body) :
                        Buffer.from(body);
     
-    await this.s3Client.send(new PutObjectCommand({
+    await (await this.getClient()).send(new PutObjectCommand({
       Bucket: this.bucket,
       Key: key,
       Body: bodyBuffer,
@@ -219,7 +227,7 @@ export class S3Provider implements StorageProvider {
         Range: options?.range ? `bytes=${options.range.offset}-${options.range.offset + options.range.length - 1}` : undefined
       });
       
-      const response = await this.s3Client.send(command);
+      const response = await (await this.getClient()).send(command);
       return {
         body: response.Body?.transformToWebStream() || null,
         contentType: response.ContentType,
@@ -236,7 +244,7 @@ export class S3Provider implements StorageProvider {
 
   async delete(key: string): Promise<void> {
     const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
-    await this.s3Client.send(new DeleteObjectCommand({
+    await (await this.getClient()).send(new DeleteObjectCommand({
       Bucket: this.bucket,
       Key: key
     }));
@@ -244,7 +252,7 @@ export class S3Provider implements StorageProvider {
 
   async list(prefix: string, options?: { delimiter?: string; maxKeys?: number; token?: string }): Promise<ListObjectsResult> {
     const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
-    const response = await this.s3Client.send(new ListObjectsV2Command({
+    const response = await (await this.getClient()).send(new ListObjectsV2Command({
       Bucket: this.bucket,
       Prefix: prefix,
       Delimiter: options?.delimiter,
@@ -274,7 +282,7 @@ export class S3Provider implements StorageProvider {
       ContentType: options?.contentType
     });
     
-    const url = await getSignedUrl(this.s3Client, command, { expiresIn: options?.expireSeconds || 3600 });
+    const url = await getSignedUrl(await this.getClient(), command, { expiresIn: options?.expireSeconds || 3600 });
     
     return {
       url,
@@ -286,7 +294,7 @@ export class S3Provider implements StorageProvider {
   async exists(key: string): Promise<boolean> {
     const { HeadObjectCommand } = await import('@aws-sdk/client-s3');
     try {
-      await this.s3Client.send(new HeadObjectCommand({
+      await (await this.getClient()).send(new HeadObjectCommand({
         Bucket: this.bucket,
         Key: key
       }));

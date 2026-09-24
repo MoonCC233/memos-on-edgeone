@@ -46,6 +46,37 @@ function sanitizePublicInstanceSettingValue(name: string, value: string): string
   }
 }
 
+// STORAGE (设置 → 存储) holds S3 credentials. The secret key never leaves the
+// server: responses carry `accessKeySecretSet` instead, and a blank/absent
+// secret on update means "keep the stored one". Idempotent — re-sanitizing an
+// already-sanitized value preserves the flag.
+function sanitizeStorageSettingValue(value: string): string {
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") {
+      return "{}";
+    }
+    if (!parsed.s3Config || typeof parsed.s3Config !== "object") {
+      return JSON.stringify(parsed);
+    }
+    const cfg = { ...parsed.s3Config };
+    const secretSet = Boolean(cfg.accessKeySecret) || cfg.accessKeySecretSet === true;
+    delete cfg.accessKeySecret;
+    delete cfg.accessKeySecretSet;
+    return JSON.stringify({ ...parsed, s3Config: { ...cfg, accessKeySecretSet: secretSet } });
+  } catch {
+    return "{}";
+  }
+}
+
+function sanitizeSettingsList(list: Array<{ name: string; value: string; description?: string }>) {
+  return list.map((setting) =>
+    getInstanceSettingKey(setting.name) === "STORAGE"
+      ? { ...setting, value: sanitizeStorageSettingValue(setting.value) }
+      : setting
+  );
+}
+
 // Helper to get settings store from context (async — createSettingsStore
 // initializes the storage provider lazily)
 async function getSettingsStore(c: any): Promise<BlobSettingsStore> {
@@ -107,18 +138,25 @@ instanceRoutes.get("/settings", authRequired, async (c) => {
     return c.json({ error: "Admin only" }, 403);
   }
 
-  const cached = await getCachedJson(c.env.CACHE, "instance:settings");
+  const cached = (await getCachedJson(c.env.CACHE, "instance:settings")) as
+    | { settings?: Array<{ name: string; value: string; description?: string }> }
+    | null;
   if (cached) {
+    if (Array.isArray(cached.settings)) {
+      cached.settings = sanitizeSettingsList(cached.settings);
+    }
     return c.json(cached);
   }
 
   const settingsStore = await getSettingsStore(c);
   const settings = await settingsStore.getAllInstanceSettings();
   const response = {
-    settings: settings.map((setting) => ({
-      ...setting,
-      name: setting.name,
-    })),
+    settings: sanitizeSettingsList(
+      settings.map((setting) => ({
+        ...setting,
+        name: setting.name,
+      }))
+    ),
   };
 
   await putCachedJson(c.env.CACHE, "instance:settings", response, 300);
@@ -137,8 +175,11 @@ instanceRoutes.get("/settings/*", authOptional, async (c) => {
   }
 
   const cacheKey = key === "AI" ? `instance:setting:${name}:${isAdmin ? "admin" : "public"}` : `instance:setting:${name}`;
-  const cached = await getCachedJson(c.env.CACHE, cacheKey);
+  const cached = (await getCachedJson(c.env.CACHE, cacheKey)) as { name?: string; value?: string } | null;
   if (cached) {
+    if (key === "STORAGE" && typeof cached.value === "string") {
+      cached.value = sanitizeStorageSettingValue(cached.value);
+    }
     return c.json(cached);
   }
 
@@ -149,9 +190,15 @@ instanceRoutes.get("/settings/*", authOptional, async (c) => {
     await putCachedJson(c.env.CACHE, cacheKey, response, 300);
     return c.json(response);
   }
+  const value =
+    key === "STORAGE"
+      ? sanitizeStorageSettingValue(setting.value)
+      : PUBLIC_INSTANCE_SETTING_KEYS.has(key) && !isAdmin
+        ? sanitizePublicInstanceSettingValue(key, setting.value)
+        : setting.value;
   const response = {
     name: setting.name,
-    value: PUBLIC_INSTANCE_SETTING_KEYS.has(key) && !isAdmin ? sanitizePublicInstanceSettingValue(key, setting.value) : setting.value,
+    value,
   };
   await putCachedJson(c.env.CACHE, cacheKey, response, 300);
   return c.json(response);
@@ -226,8 +273,56 @@ instanceRoutes.patch("/settings/*", authRequired, async (c) => {
   const name = fullPath.replace("/api/v1/instance/settings/", "");
   const key = getInstanceSettingKey(name);
   const body = await c.req.json<{ value: string; description?: string }>();
-  
+
   const settingsStore = await getSettingsStore(c);
+
+  if (key === "STORAGE") {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(body.value);
+    } catch {
+      return c.json({ error: "Invalid setting value: not valid JSON" }, 400);
+    }
+    if (parsed && typeof parsed === "object") {
+      const existing = await settingsStore.getInstanceSetting(name);
+      let storedS3: any = null;
+      try {
+        storedS3 = existing ? JSON.parse(existing.value)?.s3Config ?? null : null;
+      } catch {
+        storedS3 = null;
+      }
+
+      // Keep the stored S3 config even when the update omits it (e.g. saving
+      // the blob selection) so attachments previously written to S3 stay
+      // resolvable after switching backends.
+      if (!parsed.s3Config && storedS3) {
+        parsed.s3Config = storedS3;
+      }
+      if (parsed.s3Config && typeof parsed.s3Config === "object") {
+        const cfg = parsed.s3Config;
+        delete cfg.accessKeySecretSet; // sanitized-view flag, never stored
+        // The API never returns the stored secret, so a blank secret means
+        // "keep the existing one".
+        if (!cfg.accessKeySecret && storedS3?.accessKeySecret) {
+          cfg.accessKeySecret = storedS3.accessKeySecret;
+        }
+
+        const s3Selected = parsed.storageType === "S3" || Number(parsed.storageType ?? 0) === 3;
+        if (s3Selected) {
+          const missing: string[] = [];
+          if (!cfg.endpoint) missing.push("endpoint");
+          if (!cfg.bucket) missing.push("bucket");
+          if (!cfg.accessKeyId) missing.push("accessKeyId");
+          if (!cfg.accessKeySecret) missing.push("accessKeySecret");
+          if (missing.length > 0) {
+            return c.json({ error: `Incomplete S3 configuration: missing ${missing.join(", ")}` }, 400);
+          }
+        }
+      }
+      body.value = JSON.stringify(parsed);
+    }
+  }
+
   await settingsStore.setInstanceSetting(name, body.value, body.description);
   
   const settingCacheKeys =
@@ -239,7 +334,7 @@ instanceRoutes.patch("/settings/*", authRequired, async (c) => {
     "instance:settings",
     ...settingCacheKeys,
   ]);
-  return c.json({ name, value: body.value });
+  return c.json({ name, value: key === "STORAGE" ? sanitizeStorageSettingValue(body.value) : body.value });
 });
 
 instanceRoutes.get("/stats", authRequired, async (c) => {

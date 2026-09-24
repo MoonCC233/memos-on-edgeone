@@ -5,6 +5,7 @@ import * as settingDB from "../db/setting";
 import { createErrorBody } from "../error";
 import { deleteCachedKeys } from "../cache";
 import { StorageProvider } from "../storage";
+import { getAttachmentStorage, getAttachmentWriteStorage } from "../storage/resolve";
 
 type AttApp = { Bindings: Env; Variables: { user: UserPayload } };
 
@@ -219,17 +220,19 @@ attachmentRoutes.post("/", authRequired, async (c) => {
   const uid = crypto.randomUUID().replace(/-/g, "").slice(0, 22);
   const storageKey = `attachments/${uid}/${filename}`;
 
-  // Store in Blob/S3 storage
-  const storage: StorageProvider = c.env.BUCKET;
+  // Store in the configured attachment storage (EdgeOne Blob by default,
+  // S3-compatible bucket when selected in 设置 → 存储) and record which
+  // backend was used so reads/deletes can resolve it later.
+  const { storage, storageType } = await getAttachmentWriteStorage(c.env);
   await storage.put(storageKey, fileData, { contentType: fileType });
 
   // Store metadata in database
   const createdTs = nowTs();
   const att = await c.env.DB.prepare(
     `INSERT INTO attachment (uid, creator_id, created_ts, updated_ts, filename, type, size, memo_id, storage_type, reference)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'BLOB', ?) RETURNING *`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
   )
-    .bind(uid, user.id, createdTs, createdTs, filename, fileType, fileData.byteLength, memoId, storageKey)
+    .bind(uid, user.id, createdTs, createdTs, filename, fileType, fileData.byteLength, memoId, storageType, storageKey)
     .first<AttachmentRow>();
 
   await deleteCachedKeys(c.env.CACHE, ["instance:stats"]);
@@ -329,9 +332,9 @@ attachmentRoutes.delete("/:id", authRequired, async (c) => {
     return c.json({ error: "Permission denied" }, 403);
   }
 
-  // Delete from Blob/S3 storage
-  const storage: StorageProvider = c.env.BUCKET;
+  // Delete from the backend this attachment was stored in
   if (att.reference) {
+    const storage: StorageProvider = await getAttachmentStorage(c.env, att.storage_type);
     await storage.delete(att.reference);
   }
 
@@ -351,8 +354,13 @@ attachmentRoutes.post("/:action", authRequired, async (c) => {
   const attachments = await findAttachmentsByTokens(c.env.DB, (body.names || body.ids || []).map(String));
   const deletableAttachments = attachments.filter((att) => att.creator_id === user.id || user.role === "ADMIN");
 
-  const storage: StorageProvider = c.env.BUCKET;
-  await Promise.all(deletableAttachments.map((att) => att.reference ? storage.delete(att.reference) : Promise.resolve()));
+  await Promise.all(
+    deletableAttachments.map(async (att) => {
+      if (!att.reference) return;
+      const storage: StorageProvider = await getAttachmentStorage(c.env, att.storage_type);
+      await storage.delete(att.reference);
+    })
+  );
 
   const attachmentIds = deletableAttachments.map((att) => att.id);
   for (const chunk of chunkValues(attachmentIds, 900)) {
