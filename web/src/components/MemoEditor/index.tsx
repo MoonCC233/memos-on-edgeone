@@ -60,7 +60,7 @@ const MemoEditorImpl: React.FC<MemoEditorProps> = ({
     const providerId = aiSetting.transcription?.providerId ?? "";
     if (!providerId) return false;
     const provider = aiSetting.providers.find((p) => p.id === providerId);
-    return Boolean(provider?.apiKeySet);
+    return Boolean(provider?.endpoint && provider?.apiKeySet);
   }, [aiSetting.providers, aiSetting.transcription?.providerId]);
 
   // Get default visibility from user settings
