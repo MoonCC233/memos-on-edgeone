@@ -4,8 +4,10 @@ import type { JWTClaims, UserPayload } from "../types";
 const ISSUER = "memos";
 const ACCESS_AUD = "user.access-token";
 const REFRESH_AUD = "user.refresh-token";
-const ACCESS_TTL = 15 * 60;
-const REFRESH_TTL = 30 * 24 * 60 * 60;
+// 登录会话有效期：14 天（access token 与 refresh token/会话 Cookie 保持一致）。
+export const SESSION_TTL_DAYS = 14;
+const ACCESS_TTL = SESSION_TTL_DAYS * 24 * 60 * 60;
+const REFRESH_TTL = SESSION_TTL_DAYS * 24 * 60 * 60;
 
 function getSecretKey(secret: string): Uint8Array {
   if (!secret) {

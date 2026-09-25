@@ -184,6 +184,28 @@ export const memoServiceClient = {
 // Auth Service Client
 // ============================================================================
 
+// 后端返回的过期时间是 ISO 字符串（expiresAt / accessTokenExpiresAt）或
+// Unix 秒（expiresAtSeconds）。protobuf Timestamp 的 seconds 必须是数字，
+// 直接塞 ISO 字符串会得到 Invalid Date，导致 setAccessToken 写 localStorage
+// 的 EXPIRES_KEY 抛 RangeError、token 过期时间从未被持久化 —— 这是"登录态
+// 很快丢失、需要重新登录"的根源之一。
+function accessTokenExpiryToTimestamp(data: any): { seconds: number; nanos: number } | undefined {
+  if (typeof data?.expiresAtSeconds === "number" && Number.isFinite(data.expiresAtSeconds)) {
+    return { seconds: Math.floor(data.expiresAtSeconds), nanos: 0 };
+  }
+  const raw = data?.expiresAt ?? data?.accessTokenExpiresAt;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return { seconds: Math.floor(raw), nanos: 0 };
+  }
+  if (typeof raw === "string") {
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) {
+      return { seconds: Math.floor(parsed / 1000), nanos: 0 };
+    }
+  }
+  return undefined;
+}
+
 export const authServiceClient = {
   async getCurrentUser(_req?: any) {
     const data = await apiRequest<any>("GET", "/api/v1/auth/me");
@@ -208,7 +230,7 @@ export const authServiceClient = {
     const data = await apiRequest<any>("POST", "/api/v1/auth/signin", body);
     return {
       accessToken: data.accessToken,
-      accessTokenExpiresAt: data.expiresAt ? { seconds: data.expiresAt, nanos: 0 } : undefined,
+      accessTokenExpiresAt: accessTokenExpiryToTimestamp(data),
       user: data.user ? normalizeUser(data.user) : undefined,
     };
   },
@@ -221,7 +243,7 @@ export const authServiceClient = {
     const data = await apiRequest<any>("POST", "/api/v1/auth/refresh");
     return {
       accessToken: data.accessToken,
-      accessTokenExpiresAt: data.expiresAt ? { seconds: data.expiresAt, nanos: 0 } : undefined,
+      accessTokenExpiresAt: accessTokenExpiryToTimestamp(data),
     };
   },
 
@@ -230,9 +252,11 @@ export const authServiceClient = {
       username: req.username,
       password: req.password,
     });
+    const accessTokenExpiresAt = accessTokenExpiryToTimestamp(data);
     return {
       accessToken: data.accessToken,
-      expiresAt: data.expiresAt ? { seconds: data.expiresAt } : undefined,
+      accessTokenExpiresAt,
+      expiresAt: accessTokenExpiresAt,
       user: data.user ? normalizeUser(data.user) : undefined,
     };
   },
