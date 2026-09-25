@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import type { Env, UserPayload } from "../types";
-import { createAccessToken, createRefreshToken, verifyRefreshToken } from "../auth/jwt";
+import { createAccessToken, createRefreshToken, verifyRefreshToken, SESSION_TTL_DAYS } from "../auth/jwt";
 import { hashPassword, verifyPassword } from "../auth/password";
 import { exchangeOAuthCode } from "../auth/oauth";
 import { authRequired } from "../middleware/auth";
@@ -19,7 +19,8 @@ export const authRoutes = new Hono<AuthApp>();
 const REFRESH_COOKIE_NAME = "memos_refresh";
 const SESSION_HINT_COOKIE_NAME = "memos_session_hint";
 const SESSION_COOKIE_PATH = "/";
-const SESSION_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
+// 会话 Cookie 有效期与 JWT 会话时长保持一致（14 天）。
+const SESSION_COOKIE_MAX_AGE = SESSION_TTL_DAYS * 24 * 60 * 60;
 const SESSION_COOKIE_OPTIONS = {
   secure: true,
   sameSite: "Lax" as const,
