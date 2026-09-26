@@ -59,14 +59,38 @@ export async function uploadFileDirectly(file: Blob, options: DirectUploadOption
       }`,
     );
   }
+
+  // Read what storage actually answered: an error body, or an HTML page from
+  // a redirect that would otherwise look like a successful PUT.
+  const putStatus = resp.status;
+  const putEtag = resp.headers.get("etag") || "";
+  const putContentType = resp.headers.get("content-type") || "";
+  let putBodyBytes = -1;
+  try {
+    putBodyBytes = (await resp.arrayBuffer()).byteLength;
+  } catch {
+    // A missing body is not worth failing the upload over.
+  }
+
   if (!resp.ok) {
     throw new Error(
-      `Direct upload failed with HTTP ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ""}`,
+      `Direct upload failed with HTTP ${putStatus}${resp.statusText ? ` ${resp.statusText}` : ""}`,
+    );
+  }
+  if (putContentType.includes("text/html")) {
+    // 2xx but HTML: the storage endpoint redirected us to an error page, so
+    // nothing was stored. Surface it here instead of failing later upstream.
+    throw new Error(
+      `Direct upload failed: storage answered HTTP ${putStatus} with an HTML page instead of storing the file`,
     );
   }
 
   return apiRequest("POST", "/api/v1/attachments/complete", {
     token: session.token,
     memo: options.memo ?? null,
+    // Forwarded for the failure diagnostic: without this, "not found in
+    // storage" cannot distinguish "the PUT never stored anything" from "our
+    // existence probe could not see it".
+    put: { status: putStatus, etag: putEtag, bodyBytes: putBodyBytes },
   });
 }
