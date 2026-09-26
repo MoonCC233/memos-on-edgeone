@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env, UserPayload } from "../types";
 import { authOptional, authRequired } from "../middleware/auth";
+import { createDirectUploadToken, DIRECT_UPLOAD_TTL_SECONDS, verifyDirectUploadToken } from "../auth/direct-upload";
 import * as settingDB from "../db/setting";
 import { createErrorBody } from "../error";
 import { deleteCachedKeys } from "../cache";
@@ -27,6 +28,8 @@ export interface AttachmentRow {
 }
 
 const nowTs = () => Math.floor(Date.now() / 1000);
+
+const generateAttachmentUid = () => crypto.randomUUID().replace(/-/g, "").slice(0, 22);
 
 function formatAttachment(att: AttachmentRow) {
   return {
@@ -217,7 +220,7 @@ attachmentRoutes.post("/", authRequired, async (c) => {
     }
   }
 
-  const uid = crypto.randomUUID().replace(/-/g, "").slice(0, 22);
+  const uid = generateAttachmentUid();
   const storageKey = `attachments/${uid}/${filename}`;
 
   // Store in the configured attachment storage (EdgeOne Blob by default,
@@ -233,6 +236,137 @@ attachmentRoutes.post("/", authRequired, async (c) => {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
   )
     .bind(uid, user.id, createdTs, createdTs, filename, fileType, fileData.byteLength, memoId, storageType, storageKey)
+    .first<AttachmentRow>();
+
+  await deleteCachedKeys(c.env.CACHE, ["instance:stats"]);
+  return c.json(formatAttachment(att!), 201);
+});
+
+// Issue a presigned URL so a large file can be PUT straight to storage.
+//
+// EdgeOne Pages Cloud Functions cap the request body at 6 MB: anything bigger
+// is rejected by the platform with an HTML error page before this worker ever
+// runs, so files above MULTIPART_MAX_BYTES (see web/src/api/direct-upload.ts)
+// must not travel through the function. The bytes go client → storage, and
+// only the ticket (this call) and the finalize call below go through the
+// function, both of them tiny.
+attachmentRoutes.post("/upload-url", authRequired, async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json<{
+    filename?: string;
+    type?: string;
+    size?: number;
+    memo?: string | number | null;
+  }>();
+
+  const filename = typeof body.filename === "string" && body.filename ? body.filename : "unnamed";
+  const fileType = typeof body.type === "string" && body.type ? body.type : "application/octet-stream";
+  const fileSize = Math.floor(Number(body.size));
+  if (!Number.isFinite(fileSize) || fileSize <= 0) {
+    return c.json({ error: "Invalid file size" }, 400);
+  }
+
+  const maxUploadSizeMb = await getMaxUploadSizeMb(c.env.DB);
+  if (fileSize > maxUploadSizeMb * 1024 * 1024) {
+    return c.json(
+      createErrorBody(`File too large. Maximum upload size is ${maxUploadSizeMb}MB.`, {
+        errorKey: "message.maximum-upload-size-is",
+        errorParams: { size: maxUploadSizeMb },
+      }),
+      413,
+    );
+  }
+
+  // Validate the memo target now so we fail before the browser starts
+  // uploading bytes.
+  const resolvedMemo = await resolveWritableMemoId(c.env.DB, user, body.memo ?? null);
+  if ("error" in resolvedMemo) return c.json({ error: resolvedMemo.error }, resolvedMemo.status);
+
+  const uid = generateAttachmentUid();
+  const storageKey = `attachments/${uid}/${filename}`;
+  const { storage, storageType } = await getAttachmentWriteStorage(c.env);
+
+  let presignedUrl: string;
+  try {
+    const upload = await storage.createUploadUrl(storageKey, {
+      expireSeconds: DIRECT_UPLOAD_TTL_SECONDS,
+      contentType: fileType,
+    });
+    presignedUrl = upload.url;
+  } catch (error) {
+    return c.json(
+      {
+        error: `Direct upload unavailable: ${
+          error instanceof Error ? error.message : "could not sign the upload URL"
+        }`,
+      },
+      500,
+    );
+  }
+
+  const { token, expiresAt } = await createDirectUploadToken(c.env.JWT_SECRET, user.id, {
+    key: storageKey,
+    uid,
+    filename,
+    type: fileType,
+    size: fileSize,
+    storageType,
+  });
+
+  return c.json({ url: presignedUrl, key: storageKey, expiresAt, token });
+});
+
+// Finalize a direct upload: verify the object actually reached storage, then
+// create the attachment row. Idempotent on the storage key so a dropped
+// response can be retried without duplicating the attachment.
+attachmentRoutes.post("/complete", authRequired, async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json<{ token?: string; memo?: string | number | null }>();
+
+  if (typeof body.token !== "string" || !body.token) {
+    return c.json({ error: "Missing upload token" }, 400);
+  }
+  const claims = await verifyDirectUploadToken(body.token, c.env.JWT_SECRET, user.id);
+  if (!claims) {
+    return c.json({ error: "Invalid or expired upload token" }, 400);
+  }
+
+  const existing = await c.env.DB.prepare("SELECT * FROM attachment WHERE reference = ?")
+    .bind(claims.key)
+    .first<AttachmentRow>();
+  if (existing) return c.json(formatAttachment(existing));
+
+  const storage: StorageProvider = await getAttachmentStorage(c.env, claims.storageType);
+  let uploaded = await storage.exists(claims.key);
+  if (!uploaded) {
+    // Some backends may briefly lag the browser's PUT.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    uploaded = await storage.exists(claims.key);
+  }
+  if (!uploaded) {
+    return c.json({ error: "Uploaded file not found in storage" }, 409);
+  }
+
+  const resolvedMemo = await resolveWritableMemoId(c.env.DB, user, body.memo ?? null);
+  if ("error" in resolvedMemo) return c.json({ error: resolvedMemo.error }, resolvedMemo.status);
+
+  const createdTs = nowTs();
+  const att = await c.env.DB.prepare(
+    `INSERT INTO attachment (uid, creator_id, created_ts, updated_ts, filename, type, size, memo_id, storage_type, reference)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+  )
+    .bind(
+      claims.uid,
+      user.id,
+      createdTs,
+      createdTs,
+      claims.filename,
+      claims.type,
+      claims.size,
+      resolvedMemo.memoId,
+      claims.storageType,
+      claims.key,
+    )
     .first<AttachmentRow>();
 
   await deleteCachedKeys(c.env.CACHE, ["instance:stats"]);
@@ -344,10 +478,7 @@ attachmentRoutes.delete("/:id", authRequired, async (c) => {
 });
 
 // Batch delete
-attachmentRoutes.post("/:action", authRequired, async (c) => {
-  const action = c.req.param("action");
-  if (action !== "batchDelete") return c.notFound();
-
+attachmentRoutes.post("/batchDelete", authRequired, async (c) => {
   const user = c.get("user");
   const body = await c.req.json<{ ids?: Array<number | string>; names?: string[] }>();
 
