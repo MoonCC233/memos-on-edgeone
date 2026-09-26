@@ -12,6 +12,19 @@ const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30000;
 const RETRY_BACKOFF_MULTIPLIER = 2;
 
+/**
+ * How many consecutive attempts may fail before the UI latches the red
+ * "disconnected" state.
+ *
+ * Reconnecting is normal — EdgeOne Cloud Functions terminate the SSE stream at
+ * `maxDuration`, so every session ends with a drop + immediate retry. Those
+ * transient reconnects must stay in the grey "connecting" state; only a
+ * sustained failure (several attempts in a row that never delivered a byte)
+ * escalates to red. Once latched, the status stays red across further retry
+ * attempts so the dot cannot flicker red/grey.
+ */
+const MAX_FAILED_ATTEMPTS_BEFORE_RED = 3;
+
 const SSE_EVENT_TYPES = {
   memoCreated: "memo.created",
   memoUpdated: "memo.updated",
@@ -29,7 +42,7 @@ export type SSEConnectionStatus = "connected" | "disconnected" | "connecting";
 
 type Listener = () => void;
 
-let _status: SSEConnectionStatus = "disconnected";
+let _status: SSEConnectionStatus = "connecting";
 const _listeners = new Set<Listener>();
 
 function getSSEStatus(): SSEConnectionStatus {
@@ -73,6 +86,7 @@ export function useLiveMemoRefresh() {
   const retryDelayRef = useRef(INITIAL_RETRY_DELAY_MS);
   const abortControllerRef = useRef<AbortController | null>(null);
   const hasConnectedOnceRef = useRef(false);
+  const failedAttemptsRef = useRef(0);
 
   const currentUserName = currentUser?.name;
   const handleEvent = useCallback((event: SSEChangeEvent) => handleSSEEvent(event, queryClient), [queryClient]);
@@ -81,19 +95,48 @@ export function useLiveMemoRefresh() {
     let mounted = true;
     let retryTimeout: ReturnType<typeof setTimeout> | null = null;
 
+    const scheduleRetry = () => {
+      if (!mounted) return;
+      const delay = retryDelayRef.current;
+      retryDelayRef.current = Math.min(delay * RETRY_BACKOFF_MULTIPLIER, MAX_RETRY_DELAY_MS);
+      retryTimeout = setTimeout(connect, delay);
+    };
+
     const connect = async () => {
       if (!mounted) return;
 
       const token = getAccessToken();
       if (!token) {
-        setSSEStatus("disconnected");
-        // Not logged in; do not retry. Effect will re-run when currentUser is set (login).
+        if (!currentUserName) {
+          // Not logged in; do not retry. Effect will re-run when currentUser
+          // is set (login).
+          failedAttemptsRef.current = 0;
+          setSSEStatus("disconnected");
+          return;
+        }
+        // Logged in but the stored token is missing/expired — another API call
+        // may refresh it at any moment, so keep checking (cheap, local only)
+        // instead of latching a permanent red dot on the first miss. Fixed
+        // delay: this is not a failing network attempt, so no backoff.
+        failedAttemptsRef.current += 1;
+        setSSEStatus(failedAttemptsRef.current >= MAX_FAILED_ATTEMPTS_BEFORE_RED ? "disconnected" : "connecting");
+        retryTimeout = setTimeout(connect, INITIAL_RETRY_DELAY_MS);
         return;
       }
 
-      setSSEStatus("connecting");
+      // Only advertise "connecting" (grey) while we are still inside the
+      // transient-failure window. After the status has latched "disconnected"
+      // further attempts must not flip it back to grey, otherwise every retry
+      // cycle paints the dot red again and it flickers.
+      if (failedAttemptsRef.current < MAX_FAILED_ATTEMPTS_BEFORE_RED) {
+        setSSEStatus("connecting");
+      }
+
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
+      // Whether the stream actually delivered bytes. Headers alone (a 200 with
+      // a body that never flushes) do not count as a healthy connection.
+      let receivedData = false;
 
       try {
         const response = await fetch("/api/v1/sse", {
@@ -108,17 +151,6 @@ export function useLiveMemoRefresh() {
           throw new Error(`SSE connection failed: ${response.status}`);
         }
 
-        // Successfully connected - reset retry delay.
-        retryDelayRef.current = INITIAL_RETRY_DELAY_MS;
-        setSSEStatus("connected");
-        if (hasConnectedOnceRef.current) {
-          // Resync active collaborative views after reconnect because the server may have
-          // dropped events while the client was disconnected or backpressured.
-          queryClient.invalidateQueries({ queryKey: memoKeys.all, refetchType: "active" });
-          queryClient.invalidateQueries({ queryKey: userKeys.stats(), refetchType: "active" });
-        }
-        hasConnectedOnceRef.current = true;
-
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -126,6 +158,22 @@ export function useLiveMemoRefresh() {
         while (mounted) {
           const { done, value } = await reader.read();
           if (done) break;
+
+          if (!receivedData) {
+            receivedData = true;
+            // First byte proves the platform really streams this response —
+            // only now is the connection healthy enough to report "connected".
+            failedAttemptsRef.current = 0;
+            retryDelayRef.current = INITIAL_RETRY_DELAY_MS;
+            setSSEStatus("connected");
+            if (hasConnectedOnceRef.current) {
+              // Resync active collaborative views after reconnect because the server may have
+              // dropped events while the client was disconnected or backpressured.
+              queryClient.invalidateQueries({ queryKey: memoKeys.all, refetchType: "active" });
+              queryClient.invalidateQueries({ queryKey: userKeys.stats(), refetchType: "active" });
+            }
+            hasConnectedOnceRef.current = true;
+          }
 
           buffer += decoder.decode(value, { stream: true });
 
@@ -154,29 +202,41 @@ export function useLiveMemoRefresh() {
         }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") {
-          // Intentional abort, don't reconnect.
-          setSSEStatus("disconnected");
+          // Intentional abort (effect cleanup / logout) — no reconnect, and the
+          // cleanup already owns the status. Avoid writing "disconnected" here
+          // so a re-running effect does not flash red before it recovers.
           return;
         }
-        // Connection lost or failed - reconnect with backoff.
+        // Connection lost or failed - fall through to the retry below.
       }
 
-      setSSEStatus("disconnected");
+      if (!mounted) return;
+
+      if (receivedData) {
+        // Normal end of stream: the platform closed it (execution limit) or
+        // the network dropped it. Go straight back to "connecting" so the
+        // dot never shows an error state for an expected reconnect.
+        failedAttemptsRef.current = 0;
+        setSSEStatus("connecting");
+      } else {
+        // Attempt ended without a single byte — count it as a failure.
+        failedAttemptsRef.current += 1;
+        setSSEStatus(failedAttemptsRef.current >= MAX_FAILED_ATTEMPTS_BEFORE_RED ? "disconnected" : "connecting");
+      }
 
       // Reconnect with exponential backoff.
-      if (mounted) {
-        const delay = retryDelayRef.current;
-        retryDelayRef.current = Math.min(delay * RETRY_BACKOFF_MULTIPLIER, MAX_RETRY_DELAY_MS);
-        retryTimeout = setTimeout(connect, delay);
-      }
+      scheduleRetry();
     };
 
     connect();
 
     return () => {
       mounted = false;
-      setSSEStatus("disconnected");
+      // Handing over to the next effect run (or tearing down) — keep the dot
+      // neutral instead of painting a red "disconnected" flash.
+      failedAttemptsRef.current = 0;
       retryDelayRef.current = INITIAL_RETRY_DELAY_MS;
+      setSSEStatus("connecting");
       if (retryTimeout) {
         clearTimeout(retryTimeout);
       }
