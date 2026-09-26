@@ -110,7 +110,19 @@ export async function apiRequest<T>(method: string, path: string, body?: unknown
   }
 
   if (!resp.ok) {
-    const errorData = await resp.json().catch(() => ({ error: resp.statusText }));
+    const statusLabel = `HTTP ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ""}`;
+    const errorData = await resp.json().catch(() => {
+      // Not JSON: a proxy or the platform replaced our response. The most
+      // common case is the EdgeOne function body cap (6 MB) answering with an
+      // HTML error page, so say so instead of surfacing a bare statusText.
+      const contentType = resp.headers.get("content-type") || "";
+      if (contentType.includes("text/html")) {
+        return {
+          error: `${statusLabel} (non-JSON response; EdgeOne functions cap request/response bodies at 6 MB)`,
+        };
+      }
+      return { error: statusLabel };
+    });
     const errorParams =
       errorData.errorParams && typeof errorData.errorParams === "object" ? (errorData.errorParams as Record<string, unknown>) : undefined;
     const translatedMessage =

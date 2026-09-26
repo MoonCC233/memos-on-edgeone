@@ -90,3 +90,14 @@ function Main() {
 const container = document.getElementById("root");
 const root = createRoot(container as HTMLElement);
 root.render(<Main />);
+
+// Best-effort: attachments larger than the platform's 6 MB function response
+// cap are reassembled from ranged chunks by public/sw.js. Without the worker
+// those files fail exactly as they did before this was registered.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker
+    .register(`${import.meta.env.BASE_URL}sw.js`, { updateViaCache: "none" })
+    .catch(() => {
+      /* the worker is an enhancement, never a hard dependency */
+    });
+}

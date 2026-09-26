@@ -9,7 +9,7 @@ export const SESSION_TTL_DAYS = 14;
 const ACCESS_TTL = SESSION_TTL_DAYS * 24 * 60 * 60;
 const REFRESH_TTL = SESSION_TTL_DAYS * 24 * 60 * 60;
 
-function getSecretKey(secret: string): Uint8Array {
+export function getSecretKey(secret: string): Uint8Array {
   if (!secret) {
     // Without this guard jose would encode "" and fail later with the
     // cryptic "Zero-length key is not supported".

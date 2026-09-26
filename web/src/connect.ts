@@ -1,4 +1,5 @@
 import { apiRequest, buildQueryString, refreshAccessToken as doRefresh } from "./api/client";
+import { MULTIPART_MAX_BYTES, uploadFileDirectly } from "./api/direct-upload";
 
 export { doRefresh as refreshAccessToken };
 
@@ -463,11 +464,33 @@ export const userServiceClient = {
 export const attachmentServiceClient = {
   async createAttachment(req: { attachment: any }) {
     const att = req.attachment || {};
-    const formData = new FormData();
+    const type = att.type || (att.file instanceof File ? att.file.type : "") || "application/octet-stream";
 
+    let file: Blob | null = null;
+    let filename = "unnamed";
     if (att.content instanceof Uint8Array) {
-      const blob = new Blob([att.content], { type: att.type || "application/octet-stream" });
-      formData.append("file", blob, att.filename || "unnamed");
+      file = new Blob([att.content], { type });
+      filename = att.filename || "unnamed";
+    } else if (att.file instanceof File) {
+      file = att.file;
+      filename = att.file.name;
+    }
+
+    // Files above the multipart threshold would blow past the platform's 6 MB
+    // request cap (the platform rejects them before our worker runs), so their
+    // bytes are handed straight to storage via a presigned URL instead.
+    if (file && file.size > MULTIPART_MAX_BYTES) {
+      const data = await uploadFileDirectly(file, {
+        filename,
+        type,
+        memo: typeof att.memo === "string" && att.memo ? att.memo : null,
+      });
+      return normalizeAttachment(data);
+    }
+
+    const formData = new FormData();
+    if (file && att.content instanceof Uint8Array) {
+      formData.append("file", file, filename);
     } else if (att.file instanceof File) {
       formData.append("file", att.file);
     }
