@@ -321,7 +321,11 @@ attachmentRoutes.post("/upload-url", authRequired, async (c) => {
 // response can be retried without duplicating the attachment.
 attachmentRoutes.post("/complete", authRequired, async (c) => {
   const user = c.get("user");
-  const body = await c.req.json<{ token?: string; memo?: string | number | null }>();
+  const body = await c.req.json<{
+    token?: string;
+    memo?: string | number | null;
+    put?: { status?: number; etag?: string; bodyBytes?: number };
+  }>();
 
   if (typeof body.token !== "string" || !body.token) {
     return c.json({ error: "Missing upload token" }, 400);
@@ -336,19 +340,65 @@ attachmentRoutes.post("/complete", authRequired, async (c) => {
     .first<AttachmentRow>();
   if (existing) return c.json(formatAttachment(existing));
 
-  const storage: StorageProvider = await getAttachmentStorage(c.env, claims.storageType);
-  let uploaded = await storage.exists(claims.key);
-  if (!uploaded) {
-    // Some backends may briefly lag the browser's PUT.
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    uploaded = await storage.exists(claims.key);
-  }
-  if (!uploaded) {
-    return c.json({ error: "Uploaded file not found in storage" }, 409);
-  }
-
+  // Validate the memo target before spending time probing storage.
   const resolvedMemo = await resolveWritableMemoId(c.env.DB, user, body.memo ?? null);
   if ("error" in resolvedMemo) return c.json({ error: resolvedMemo.error }, resolvedMemo.status);
+
+  // The browser's PUT can be visible a moment before our probe catches up,
+  // and HEAD is not always answered on the blob endpoint while a prefix
+  // listing is — so probe HEAD, fall back to listing our per-upload uid
+  // prefix, and back off before giving up. `uid` is unique per upload, so
+  // anything under this prefix is the file the ticket was issued for; using
+  // whichever key actually exists also self-heals a key mismatch.
+  const storage: StorageProvider = await getAttachmentStorage(c.env, claims.storageType);
+  const uidPrefix = `attachments/${claims.uid}/`;
+  const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  const probes: string[] = [];
+  const startedAt = Date.now();
+  let landedKey: string | null = null;
+
+  for (const waitMs of [0, 400, 1200, 3000]) {
+    if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    const at = `${Date.now() - startedAt}ms`;
+
+    try {
+      if (await storage.exists(claims.key)) {
+        landedKey = claims.key;
+        break;
+      }
+      probes.push(`${at} HEAD miss`);
+    } catch (error) {
+      probes.push(`${at} HEAD error: ${describeError(error)}`);
+    }
+
+    try {
+      const listed = await storage.list(uidPrefix, { maxKeys: 4 });
+      probes.push(`${at} list objects=${listed.objects.length} dirs=${listed.prefixes.length}`);
+      const found = listed.objects.find((object) => object.key);
+      if (found) {
+        landedKey = found.key;
+        break;
+      }
+    } catch (error) {
+      probes.push(`${at} list error: ${describeError(error)}`);
+    }
+  }
+
+  if (!landedKey) {
+    const put = body.put;
+    return c.json(
+      {
+        error:
+          `Uploaded file not found in storage (key=${claims.key}; store=${claims.storageType}; ` +
+          `probes=[${probes.join(", ")}]; client PUT=${
+            put
+              ? `HTTP ${put.status} etag=${put.etag || "-"} body=${put.bodyBytes}B`
+              : "not reported"
+          })`,
+      },
+      409,
+    );
+  }
 
   const createdTs = nowTs();
   const att = await c.env.DB.prepare(
@@ -365,7 +415,7 @@ attachmentRoutes.post("/complete", authRequired, async (c) => {
       claims.size,
       resolvedMemo.memoId,
       claims.storageType,
-      claims.key,
+      landedKey,
     )
     .first<AttachmentRow>();
 

@@ -104,7 +104,11 @@ describe("attachment upload routing", () => {
     expect(put.credentials).toBe("omit");
 
     const completeRequest = fetchMock.mock.calls[2][1];
-    expect(JSON.parse(completeRequest.body)).toEqual({ token: "upload-ticket", memo: null });
+    expect(JSON.parse(completeRequest.body)).toEqual({
+      token: "upload-ticket",
+      memo: null,
+      put: { status: 200, etag: "", bodyBytes: 0 },
+    });
 
     expect(result.uid).toBe("big");
   });
@@ -127,6 +131,31 @@ describe("attachment upload routing", () => {
         attachment: { filename: "big.png", type: "image/png", content: LARGE_FILE },
       }),
     ).rejects.toThrow(/Direct upload failed/);
+  });
+
+  it("rejects a 2xx HTML answer from the storage endpoint", async () => {
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = requestUrl(input);
+      if (url === "/api/v1/attachments/upload-url") {
+        return jsonResponse({ url: PRE_SIGNED_URL, key: "attachments/xyz/big.png", expiresAt: 1, token: "t" });
+      }
+      if (url === PRE_SIGNED_URL) {
+        // A redirect landing on an error page would otherwise look like a
+        // successful PUT and produce a confusing "not found in storage".
+        return new Response("<html>nope</html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+
+    const { attachmentServiceClient } = await import("@/connect");
+    await expect(
+      attachmentServiceClient.createAttachment({
+        attachment: { filename: "big.png", type: "image/png", content: LARGE_FILE },
+      }),
+    ).rejects.toThrow(/HTML page/);
   });
 });
 
