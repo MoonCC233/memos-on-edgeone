@@ -102,7 +102,7 @@ const UserMenu = (props: Props) => {
             ) : (
               <User2Icon className="w-6 mx-auto h-auto text-muted-foreground" />
             )}
-            {sseStatus !== "connected" && (
+            {currentUser && sseStatus !== "connected" && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span
